@@ -1,6 +1,6 @@
 # QuestVision AI — Status do projeto
 
-_Última atualização: 2026-10-20 · Fase 1 (fundação do app Android)_
+_Última atualização: 2026-10-20 · Fase 1 (fundação do app Android) — build validado; teste no aparelho pendente_
 
 ## 1. Objetivo
 
@@ -43,7 +43,18 @@ fluxo unidirecional, Hilt, e quatro peças por tela — `UiState` → `ViewModel
 | `QuestVisionCameraViewModel` | Estado único em `StateFlow`; regras de captura (bloqueio de duplo toque), revisão, descarte. Sem `Context`. Implementa `CameraSessionListener`. |
 | `QuestVisionCameraController` | Ciclo de vida CameraX: `Preview` + `ImageCapture` na câmera traseira, observação de `CameraState`/`ZoomState`, foco por toque, zoom, gravação do JPEG. Único lugar com `Context`. |
 | `QuestVisionCameraScreen` | Compose: permissão, preview, status, zoom, obturador, acesso à última captura, revisão. |
-| `CaptureRepository` | Arquivos em `noBackupFilesDir/captures` (privado, fora do backup em nuvem); decodificação reduzida (≤ 2048 px) e orientada por EXIF, em `Dispatchers.IO`. |
+| `CaptureRepository` | Arquivos em `noBackupFilesDir/captures` (privado, fora do backup em nuvem); retenção (abaixo); decodificação reduzida (≤ 2048 px) e orientada por EXIF, em `Dispatchers.IO`. |
+
+### Retenção de capturas
+
+| Pasta | Conteúdo | Política |
+| --- | --- | --- |
+| `no_backup/captures/` | capturas recentes (não decididas) | só as **20** mais recentes (`MAX_RECENT_CAPTURES`); as mais antigas são apagadas ao abrir a tela e após cada captura |
+| `no_backup/captures/kept/` | capturas que o usuário escolheu **Manter** | **nunca** apagadas automaticamente |
+
+Na prévia: **Manter** move o arquivo para `kept/`; **Descartar** apaga; **Voltar** (seta ou botão
+voltar do sistema) apenas fecha, deixando a captura no conjunto recente sujeito à retenção. A captura
+recém-feita é sempre a mais nova, portanto a retenção nunca a remove.
 
 ### Captura otimizada para texto em monitor
 
@@ -82,8 +93,8 @@ e tratamento de falhas. Pontos de extensão já existentes:
 - Zoom por slider e atalhos (0.5×/1×/2×/5× dentro do alcance do aparelho); oculto em lentes sem zoom;
   o zoom é reaplicado após pausar/retomar o app.
 - Captura manual (obturador desabilitado enquanto a câmera não está pronta ou já capturando).
-- Armazenamento privado; prévia automática após capturar; botão para reabrir a última captura (também
-  após reiniciar o app). Na prévia: **Concluir** mantém o arquivo, **Descartar** o apaga.
+- Armazenamento privado com retenção (seção 3); prévia automática após capturar; botão para reabrir a
+  última captura (também após reiniciar o app). Na prévia: **Manter**, **Descartar** ou **Voltar**.
 - Mensagem de erro de captura (some em 3 s) e tela de erro com "Tentar novamente" se a câmera não vincular.
 - Câmera desvinculada em `ON_PAUSE` e liberada ao sair da tela.
 - Strings em resources, com tradução **pt-BR** (`values-pt-rBR`) e inglês como padrão.
@@ -95,106 +106,152 @@ e tratamento de falhas. Pontos de extensão já existentes:
 - `:core-ui`: textos fixos em inglês do scaffold, `ErrorView` e `CapturedImagePreview`/
   `CapturedVideoPreview` movidos para `strings.xml` (+ pt-BR), cumprindo a regra de "sem strings
   soltas" do `AGENTS.md`.
+- `:core-ui` `CapturedImagePreview`: parâmetros opcionais `onBack` (padrão `onDone`) e `doneLabel`
+  (padrão "Done"); os samples não mudam.
+- `:app` manifesto: `RECORD_AUDIO` e `WRITE_EXTERNAL_STORAGE` saíram de `src/main` para
+  `src/debug/AndroidManifest.xml` (só os samples de vídeo, acessíveis apenas em debug, os usam).
 - `:app` `CatalogApp`: destino inicial QuestVision; o pedido de permissão do catálogo passou para
   dentro do destino do catálogo, para não concorrer com o pedido da tela QuestVision (o Android
   descarta um de dois pedidos simultâneos).
 
-## 5. Como executar (Linux)
+## 5. Ambiente de build (Linux)
 
-### Pré-requisitos (não presentes nesta máquina em 2026-10-20 — ver seção 6)
+Ambiente instalado em 2026-10-20 nesta máquina (Debian 13 x86_64, 8 núcleos, 7,4 GiB RAM), tudo no
+diretório do usuário, sem sudo:
 
-1. **JDK 17** (o build usa `jvmToolchain(17)`). O Android Studio já inclui um JBR utilizável.
-2. **Android SDK** com a plataforma **API 37** (`platforms;android-37.0`) e build-tools/platform-tools.
-3. O wrapper baixa o **Gradle 9.6.0** automaticamente na primeira execução (precisa de internet).
+| Componente | Local | Observação |
+| --- | --- | --- |
+| JDK 17.0.20.1 (Eclipse Temurin) | `~/.local/opt/jdk-17.0.20.1+1` | SHA-256 conferido com a API da Adoptium |
+| Android cmdline-tools 13114758 | `~/Android/Sdk/cmdline-tools/latest` | SHA-256 `7ec96528…` |
+| `platforms;android-37.0`, `build-tools;37.0.0`, `platform-tools` 37.0.1 | `~/Android/Sdk` | licença do SDK aceita pelo usuário |
+| Gradle 9.6.0 + dependências | `~/.gradle` | baixados pelo wrapper |
+| `JAVA_HOME`, `ANDROID_HOME`, `PATH` | bloco marcado `QuestVision Android env` no `~/.bashrc` | abrir um novo terminal |
+| `local.properties` (`sdk.dir`) | raiz do repositório | ignorado pelo Git |
 
-### Android Studio (recomendado)
-
-1. Instale o Android Studio (versão compatível com AGP 9.2.x) e, no SDK Manager, a plataforma
-   Android 17 / API 37.
-2. **File → Open** → pasta do repositório. O Studio cria `local.properties` com `sdk.dir` (arquivo
-   ignorado pelo Git).
-3. No celular: **Configurações → Sobre o telefone →** toque 7× em "Número da versão"; depois
-   **Opções do desenvolvedor → Depuração USB** (ou Depuração por Wi-Fi).
-4. Conecte via USB, aceite a chave RSA no celular, selecione o aparelho e rode a configuração `app`.
-
-### Linha de comando
+A máquina tinha só ~1,2 GiB de RAM livre e ~6 GB de disco. Para não estourar memória, o Gradle foi
+executado com limites passados pela linha de comando (o `gradle.properties` não foi alterado):
 
 ```bash
-export JAVA_HOME=/caminho/para/jdk-17
-export ANDROID_HOME=$HOME/Android/Sdk          # ou crie local.properties com sdk.dir=...
-./gradlew spotlessApply                          # formata (ktlint + cabeçalhos)
-./gradlew assembleDebug spotlessCheck            # build + verificação de formato (igual ao CI)
-./gradlew :questvision-camera:testDebugUnitTest  # testes unitários do módulo
-adb devices                                      # o celular deve aparecer como "device"
-./gradlew :app:installDebug
-adb shell am start -n com.questvision.ai/com.android.camera.catalog.MainActivity
+./gradlew --max-workers=2 \
+  -Dorg.gradle.jvmargs="-Xmx2560m -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8" \
+  -Pkotlin.compiler.execution.strategy=in-process <tarefas>
 ```
 
-Para inspecionar capturas num build debug:
-`adb shell run-as com.questvision.ai ls no_backup/captures`.
+### Comandos
 
-## 6. Resultado da compilação
+```bash
+./gradlew spotlessApply                          # formata (ktlint + cabeçalhos)
+./gradlew spotlessCheck                          # verificação de formato (igual ao CI)
+./gradlew :app:assembleDebug                     # APK debug
+./gradlew :questvision-camera:testDebugUnitTest  # testes unitários do módulo
+```
 
-**Não executado.** O ambiente em que a Fase 1 foi implementada **não possui**:
+### Instalar no celular
 
-- `java`/JDK (nenhum em `PATH`, `JAVA_HOME` vazio, `/usr/lib/jvm` inexistente);
-- Android SDK (`ANDROID_HOME`/`ANDROID_SDK_ROOT` vazios, `~/Android/Sdk` inexistente, sem `adb`);
-- Android Studio;
-- cache do Gradle (`~/.gradle` inexistente).
+1. No celular: **Configurações → Sobre o telefone →** tocar 7× em "Número da versão"; depois
+   **Opções do desenvolvedor → Depuração USB**.
+2. Conectar por USB (modo "Transferência de arquivos" ajuda alguns aparelhos) e aceitar a chave RSA.
+3. `adb devices -l` deve listar o aparelho como `device`. Se aparecer `no permissions`, o Debian
+   precisa de regras udev (pacote `android-sdk-platform-tools-common` e usuário no grupo `plugdev`),
+   o que exige sudo.
+4. Instalar e abrir:
 
-Nada foi instalado, por exigir autorização. Consequentemente **não foram executados**: `assembleDebug`,
-`spotlessCheck`/`spotlessApply`, testes unitários e instalação no celular. O código foi escrito contra
-as APIs efetivamente presentes no fork (CameraX 1.6.1, componentes de `:core-*` lidos no código) e
-revisado manualmente, mas **pode haver erros de compilação ou de formatação ktlint** a corrigir no
-primeiro build. O workflow `.github/workflows` do repositório (JDK 17 + SDK 37 + `spotlessCheck` +
-`assembleDebug`) também valida o projeto se o branch for enviado ao GitHub.
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n com.questvision.ai/com.android.camera.catalog.MainActivity
+adb logcat --pid=$(adb shell pidof com.questvision.ai) | grep -E "QuestVision|CameraX|AndroidRuntime"
+adb shell run-as com.questvision.ai ls -l no_backup/captures no_backup/captures/kept
+```
+
+## 6. Resultado da compilação (2026-10-20)
+
+| Comando | Resultado |
+| --- | --- |
+| `spotlessApply` | ✅ BUILD SUCCESSFUL. Só reformatou dois blocos `when` em `QuestVisionCameraScreen.kt` |
+| `spotlessCheck` | ✅ BUILD SUCCESSFUL |
+| `:app:assembleDebug` | ✅ BUILD SUCCESSFUL (primeira execução: 8m56s, 773 tarefas) |
+| `:questvision-camera:testDebugUnitTest` | ✅ 5/5 testes (`CalculateInSampleSizeTest` 3, `PruneOldestTest` 2) |
+| `:app:processReleaseMainManifest` | ✅ (usado para inspecionar as permissões de release) |
+
+Nenhum erro de compilação nos arquivos novos. O único aviso do Kotlin no build (`@OptIn` sem efeito em
+`core-ui/.../VideoPlayer.kt`) já existia no upstream.
+
+**APK:** `app/build/outputs/apk/debug/app-debug.apk` (≈ 236 MB em debug, sem minificação; a maior
+parte vem das dependências dos samples, como ML Kit e Media3).
+
+### Permissões no APK
+
+| Permissão | debug | release | Origem |
+| --- | --- | --- | --- |
+| `CAMERA` | ✅ | ✅ | QuestVision (`app/src/main`) |
+| `RECORD_AUDIO`, `WRITE_EXTERNAL_STORAGE` (≤ 28) | ✅ | — | samples (`app/src/debug`) |
+| `INTERNET` | ✅ | ✅ | ML Kit `vision-internal-vkp` / `datatransport` (samples de ML) |
+| `ACCESS_NETWORK_STATE`, `WAKE_LOCK` | ✅ | ✅ | Media3 ExoPlayer (`:core-ui`, prévia de vídeo dos samples) |
+
+O código do QuestVision não usa rede e não envia imagens. As permissões de bibliotecas só somem do
+release quando os samples (e o ExoPlayer do `:core-ui`) deixarem de ser empacotados no release. Ver
+seção 8.
 
 ### Validação
 
 | Item | Situação |
 | --- | --- |
-| Compilação | **Pendente** (sem JDK/SDK) |
-| Formatação Spotless | **Pendente** |
-| Teste unitário `CalculateInSampleSizeTest` | Escrito, **não executado** |
-| Preview, foco, zoom, captura, revisão no celular | **Pendente** (depende do aparelho físico) |
-| Permissões (conceder / negar / negar permanentemente) | **Pendente** (aparelho) |
+| Compilação, formatação, testes unitários | ✅ Executados (acima) |
+| Instalação no aparelho | **Pendente**: nenhum aparelho conectado ao ADB |
+| Inicialização, preview, foco, zoom, captura, revisão, retenção | **Pendente** (aparelho físico) |
+| Permissões (conceder / negar / negar permanentemente) | **Pendente** (aparelho, interação humana) |
 
-### Roteiro de teste no aparelho
+### Roteiro de teste no aparelho (requer interação humana)
 
 1. Primeira abertura → diálogo de permissão. Negar → cartão com "Conceder permissão". Negar de novo
    ("não perguntar") → "Abrir Configurações"; conceder lá e voltar → preview aparece.
 2. Status passa de "Iniciando câmera" para "Câmera pronta".
 3. Tocar no texto do monitor → retícula e foco; verificar nitidez.
 4. Zoom pelo slider e atalhos; pausar/retomar o app e verificar que o zoom permanece.
-5. Capturar → status "Capturando" → prévia. Ampliar visualmente e conferir a legibilidade do texto.
-6. "Concluir" → volta à câmera; botão de galeria reabre a captura. "Descartar" apaga.
-7. Fechar e reabrir o app → botão de última captura continua disponível.
-8. Abrir outro app de câmera em paralelo → status "Câmera em uso por outro app".
-9. Girar o aparelho, bloquear a tela e voltar: o preview deve retornar sem travar.
+5. Capturar → status "Capturando" → prévia. Conferir a legibilidade do texto.
+6. **Manter** → `kept/`; **Descartar** → arquivo apagado; **Voltar** → fica em `captures/`.
+7. Fazer mais de 20 capturas sem manter → só as 20 mais recentes permanecem; as de `kept/` intactas.
+8. Fechar e reabrir o app → o botão de última captura continua disponível.
+9. Abrir outro app de câmera em paralelo → status "Câmera em uso por outro app".
+10. Girar o aparelho, bloquear a tela e voltar: o preview deve retornar sem travar.
 
-## 7. Limitações conhecidas
+## 7. Revisão técnica (2026-10-20)
 
-- Build e testes não executados (seção 6).
-- O manifesto ainda declara `RECORD_AUDIO` e `WRITE_EXTERNAL_STORAGE` (≤ API 28) porque os samples de
-  vídeo mantidos no app precisam delas. O QuestVision só solicita `CAMERA`. Remover quando os samples
-  saírem do app.
-- O catálogo de samples continua empacotado no APK (só acessível em debug), aumentando o tamanho e as
-  dependências (ML Kit, Media3...).
-- Não há limite de retenção para as capturas em `no_backup/captures`.
-- A prévia é exibida em `ContentScale.Fit`, sem pinça para ampliar.
+- **Câmera/ciclo de vida:** vinculação em `ON_RESUME`, desvinculação em `ON_PAUSE`, `release()` ao sair
+  da composição, observadores de `CameraState`/`ZoomState` removidos antes de revincular, escopo de
+  corrotinas cancelado. Captura com câmera fechada é reportada como erro pelo CameraX (sem crash).
+- **Foco (bug corrigido):** `CameraXPreview` registra o toque com `pointerInput(surfaceRequest)`, então
+  guarda os callbacks da primeira composição. A versão anterior passava `null` até o suporte a foco ser
+  detectado, e o foco por toque podia nunca funcionar. Agora os callbacks são fixos e leem o estado
+  atual (`rememberUpdatedState`) no momento do toque.
+- **Zoom:** limitado ao alcance reportado pelo `ZoomState`; reaplicado após cada revinculação.
+- **Armazenamento:** JPEG gravado pelo CameraX fora da main thread; decodificação reduzida em IO;
+  arquivo parcial apagado em falha; retenção implementada.
+- **Falhas:** sem câmera traseira → `Unsupported`; falha de inicialização/vinculação → `Error` com
+  "Tentar novamente"; erros do `CameraState` → indicador de status; falha de captura → aviso por 3 s;
+  arquivo de revisão ausente/ilegível → volta para a captura anterior.
+
+## 8. Limitações conhecidas
+
+- Preview, foco, zoom, captura e retenção **ainda não foram testados em aparelho**.
+- O release ainda empacota os samples, e com eles `INTERNET`, `ACCESS_NETWORK_STATE`, `WAKE_LOCK` e
+  o `MlKitInitProvider`, que inicializa no startup. A solução definitiva é tornar os samples
+  `debugImplementation` e mover o catálogo para `src/debug`, ou removê-los do app.
+- APK debug grande (≈ 236 MB) pelo mesmo motivo.
+- A prévia usa `ContentScale.Fit`, sem pinça para ampliar.
 - O pacote/namespace do `:app` continua `com.android.camera.catalog` (só o `applicationId` mudou).
 - O cabeçalho de licença exigido pelo Spotless atribui também os arquivos novos ao "The Android Open
-  Source Project"; ajustar `spotless/copyright.kt` se o projeto quiser um cabeçalho próprio.
+  Source Project"; para mudar, edite `spotless/copyright.kt`.
 
-## 8. Próximas etapas
+## 9. Próximas etapas
 
-1. **Configurar o ambiente** (JDK 17 + Android SDK API 37 ou Android Studio), rodar
-   `./gradlew spotlessApply assembleDebug spotlessCheck :questvision-camera:testDebugUnitTest`,
-   corrigir o que surgir e executar o roteiro da seção 6 no aparelho.
-2. Fase 2 — **Detection**: `ImageAnalysis` no controller com um detector barato de mudança de cena
+1. **Teste no aparelho** (seção 6): conectar o celular com depuração USB, instalar o APK, executar o
+   roteiro e coletar `logcat`.
+2. Opcional antes da Fase 2: tirar os samples do build de release (seção 8).
+3. Fase 2 — **Detection**: `ImageAnalysis` no controller com um detector barato de mudança de cena
    (diferença de luminância/hash perceptual em baixa resolução) + estabilização (cena parada por N
    quadros) antes de disparar a captura automática; introduzir a máquina de estados
-   `IDLE/MONITORING/...` e a pausa manual.
-3. **Recognition/Question**: OCR on-device para detectar e deduplicar questões antes de qualquer envio.
-4. **AI/Telegram/Settings**: integração com modelo multimodal e Telegram Bot API, com tokens fora do
+   `IDLE/MONITORING/...` e a pausa manual. As capturas automáticas caem na retenção de 20 recentes.
+4. **Recognition/Question**: OCR on-device para detectar e deduplicar questões antes de qualquer envio.
+5. **AI/Telegram/Settings**: integração com modelo multimodal e Telegram Bot API, com tokens fora do
    código-fonte (configuração do usuário em armazenamento criptografado).

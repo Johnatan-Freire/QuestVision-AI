@@ -42,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -128,10 +129,13 @@ fun QuestVisionCameraScreen(
                 )
                 state.review?.let { bitmap ->
                     BackHandler(onBack = viewModel::closeReview)
+                    // Keep = preserve forever; Discard = delete; Back = leave it to retention.
                     CapturedImagePreview(
                         bitmap = bitmap,
                         onRetake = viewModel::discardLastCapture,
-                        onDone = viewModel::closeReview,
+                        onDone = viewModel::keepLastCapture,
+                        onBack = viewModel::closeReview,
+                        doneLabel = stringResource(R.string.questvision_keep_capture),
                     )
                 }
             }
@@ -156,6 +160,7 @@ private fun CameraContent(
     val displayRotation = rememberDisplayRotation()
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     val isReviewing = state.review != null
+    val reviewing by rememberUpdatedState(isReviewing)
 
     LaunchedEffect(controller, displayRotation) {
         controller.updateTargetRotation(displayRotation)
@@ -177,8 +182,14 @@ private fun CameraContent(
         val observer =
             LifecycleEventObserver { _, event ->
                 when (event) {
-                    Lifecycle.Event.ON_RESUME -> controller.openCamera()
-                    Lifecycle.Event.ON_PAUSE -> controller.closeCamera()
+                    Lifecycle.Event.ON_RESUME -> {
+                        controller.openCamera()
+                    }
+
+                    Lifecycle.Event.ON_PAUSE -> {
+                        controller.closeCamera()
+                    }
+
                     else -> {}
                 }
             }
@@ -208,24 +219,17 @@ private fun CameraContent(
             val isLandscape =
                 LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
             Box(modifier = Modifier.aspectRatio(if (isLandscape) 4f / 3f else 3f / 4f)) {
-                val canFocus = controller.isTapToFocusSupported && !isReviewing
                 controller.surfaceRequest?.let { request ->
+                    // CameraXPreview keys its tap handler on the SurfaceRequest only, so these
+                    // callbacks must read current state at tap time instead of being swapped out.
                     CameraXPreview(
                         surfaceRequest = request,
-                        onTapToFocus =
-                            if (canFocus) {
-                                { surfaceCoords: Offset, width: Float, height: Float ->
-                                    controller.focus(surfaceCoords, width, height)
-                                }
-                            } else {
-                                null
-                            },
-                        onFocusTap =
-                            if (canFocus) {
-                                { offset: Offset -> focusPoint = offset }
-                            } else {
-                                null
-                            },
+                        onTapToFocus = { surfaceCoords, width, height ->
+                            if (!reviewing) controller.focus(surfaceCoords, width, height)
+                        },
+                        onFocusTap = { offset ->
+                            if (!reviewing && controller.isTapToFocusSupported) focusPoint = offset
+                        },
                     )
                 }
                 RuleOfThirdsGrid()
@@ -381,8 +385,11 @@ private fun statusLabel(status: CameraStatus): String =
 private fun statusColor(status: CameraStatus): Color =
     when (status) {
         CameraStatus.ACTIVE -> MaterialTheme.colorScheme.primary
+
         CameraStatus.STARTING -> Color(0xFFFFC857)
+
         CameraStatus.CLOSED -> Color.White.copy(alpha = 0.4f)
+
         CameraStatus.IN_USE,
         CameraStatus.DISABLED,
         CameraStatus.UNAVAILABLE,

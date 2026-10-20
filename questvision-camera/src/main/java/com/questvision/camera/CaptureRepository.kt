@@ -31,7 +31,11 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val CAPTURE_DIRECTORY = "captures"
+private const val KEPT_DIRECTORY = "kept"
 private const val CAPTURE_EXTENSION = "jpg"
+
+/** Unpreserved captures beyond this many (newest first) are deleted. Preserved ones are never pruned. */
+internal const val MAX_RECENT_CAPTURES = 20
 
 /** Longest edge of the bitmap decoded for on-screen review; the JPEG on disk keeps full resolution. */
 private const val REVIEW_MAX_DIMENSION = 2048
@@ -40,6 +44,9 @@ private const val REVIEW_MAX_DIMENSION = 2048
  * Owns the captured photos. Captures live in the app's private, non-backed-up storage
  * (`noBackupFilesDir/captures`): they never reach the shared gallery or a cloud backup, and they are
  * removed when the app is uninstalled.
+ *
+ * Retention: new captures land in `captures/` and only the [MAX_RECENT_CAPTURES] newest are kept
+ * there. A capture the user chooses to keep is moved to `captures/kept/`, which is never pruned.
  */
 @Singleton
 class CaptureRepository
@@ -48,6 +55,7 @@ class CaptureRepository
         @ApplicationContext context: Context,
     ) {
         private val captureDirectory = File(context.noBackupFilesDir, CAPTURE_DIRECTORY)
+        private val keptDirectory = File(captureDirectory, KEPT_DIRECTORY)
 
         /**
          * Returns a new, not-yet-written file for the next capture. Synchronous so a capture request
@@ -59,12 +67,30 @@ class CaptureRepository
             return File(captureDirectory, "capture_$timestamp.$CAPTURE_EXTENSION")
         }
 
-        /** The most recently written capture, or `null` when there is none. */
+        /** The most recently written capture, preserved or not, or `null` when there is none. */
         suspend fun latestCapture(): File? =
             withContext(Dispatchers.IO) {
-                captureDirectory
-                    .listFiles { file -> file.isFile && file.extension == CAPTURE_EXTENSION }
-                    ?.maxByOrNull { it.lastModified() }
+                (listCaptures(captureDirectory) + listCaptures(keptDirectory))
+                    .maxByOrNull { it.lastModified() }
+            }
+
+        /**
+         * Moves [file] into the preserved folder, exempting it from retention. Returns its new
+         * location, or [file] itself if it was already preserved or could not be moved.
+         */
+        suspend fun preserve(file: File): File =
+            withContext(Dispatchers.IO) {
+                if (file.parentFile == keptDirectory) return@withContext file
+                keptDirectory.mkdirs()
+                val target = File(keptDirectory, file.name)
+                // A rename within the same folder tree keeps lastModified, so ordering is unchanged.
+                if (file.renameTo(target)) target else file
+            }
+
+        /** Applies the retention policy to unpreserved captures; returns how many were deleted. */
+        suspend fun pruneRecentCaptures(): Int =
+            withContext(Dispatchers.IO) {
+                pruneOldest(listCaptures(captureDirectory), MAX_RECENT_CAPTURES)
             }
 
         suspend fun delete(file: File) {
@@ -95,6 +121,12 @@ class CaptureRepository
                     .createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
                     .also { rotated -> if (rotated !== decoded) decoded.recycle() }
             }
+
+        private fun listCaptures(directory: File): List<File> =
+            directory
+                .listFiles { file -> file.isFile && file.extension == CAPTURE_EXTENSION }
+                ?.toList()
+                .orEmpty()
 
         private fun readExifRotation(file: File): Int {
             val orientation =
@@ -129,3 +161,13 @@ internal fun calculateInSampleSize(
     }
     return sampleSize
 }
+
+/** Deletes all but the [keep] most recently modified [files]; returns how many were deleted. */
+internal fun pruneOldest(
+    files: List<File>,
+    keep: Int,
+): Int =
+    files
+        .sortedByDescending { it.lastModified() }
+        .drop(keep)
+        .count { it.delete() }

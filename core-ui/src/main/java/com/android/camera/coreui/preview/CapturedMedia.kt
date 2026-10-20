@@ -71,6 +71,9 @@ import com.android.camera.coreui.widget.VideoPlayer
  * Full-screen review of a captured still in the console style: a scrim back button, the real image
  * dimensions as mono metadata, and a Retake / Done action bar. [onRetake] returns to the viewfinder;
  * [onDone] leaves the sample.
+ *
+ * @param onBack invoked by the scrim back button; defaults to [onDone].
+ * @param doneLabel label of the filled action; defaults to "Done".
  */
 @Composable
 fun CapturedImagePreview(
@@ -78,6 +81,8 @@ fun CapturedImagePreview(
     onRetake: () -> Unit,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
+    onBack: () -> Unit = onDone,
+    doneLabel: String = stringResource(R.string.review_done),
 ) {
     Box(
         modifier =
@@ -93,7 +98,7 @@ fun CapturedImagePreview(
         )
 
         ScrimIconButton(
-            onClick = onDone,
+            onClick = onBack,
             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
             contentDescription = stringResource(R.string.review_back),
             size = 34.dp,
@@ -141,7 +146,7 @@ fun CapturedImagePreview(
             ReviewActionPill(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Filled.Check,
-                label = stringResource(R.string.review_done),
+                label = doneLabel,
                 filled = true,
                 onClick = onDone,
             )

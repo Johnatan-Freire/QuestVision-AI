@@ -45,6 +45,7 @@ class QuestVisionCameraViewModel
 
         init {
             viewModelScope.launch {
+                captureRepository.pruneRecentCaptures()
                 lastCapture = captureRepository.latestCapture()
                 _uiState.value = QuestVisionCameraUiState.Previewing(lastCapture = lastCapture)
             }
@@ -73,6 +74,21 @@ class QuestVisionCameraViewModel
         fun closeReview() {
             reviewJob?.cancel()
             updatePreviewing { it.copy(review = null) }
+        }
+
+        /** Preserves the capture under review (exempt from retention) and returns to the viewfinder. */
+        fun keepLastCapture() {
+            val file = lastCapture
+            closeReview()
+            if (file == null) return
+            viewModelScope.launch {
+                val kept = captureRepository.preserve(file)
+                // Only repoint if nothing newer was captured while the file was being moved.
+                if (lastCapture == file) {
+                    lastCapture = kept
+                    updatePreviewing { it.copy(lastCapture = kept) }
+                }
+            }
         }
 
         /** Deletes the capture under review and returns to the viewfinder. */
@@ -120,6 +136,8 @@ class QuestVisionCameraViewModel
             lastCapture = file
             updatePreviewing { it.copy(pendingCapture = null, lastCapture = file) }
             openReview(file)
+            // The new capture is the newest, so retention can never remove it here.
+            viewModelScope.launch { captureRepository.pruneRecentCaptures() }
         }
 
         override fun onCaptureFailed(file: File) {

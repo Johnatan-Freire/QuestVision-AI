@@ -17,6 +17,7 @@
 
     <string name="questvision_capture">Capture photo</string>
     <string name="questvision_capture_failed">Couldn\'t capture the photo. Try again.</string>
+    <string name="questvision_keep_capture">Keep</string>
     <string name="questvision_open_last_capture">Open last capture</string>
     <string name="questvision_open_samples">Open camera samples</string>
 </resources>

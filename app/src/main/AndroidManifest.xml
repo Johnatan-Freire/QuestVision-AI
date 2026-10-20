@@ -3,8 +3,8 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <!-- RECORD_AUDIO / legacy storage are only needed by the video samples, which are reachable in
+         debug builds only; they are declared in src/debug/AndroidManifest.xml. -->
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
