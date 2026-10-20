@@ -18,6 +18,7 @@ package com.android.camera.catalog.ui
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
@@ -92,6 +93,7 @@ import com.android.camera.catalog.domain.SampleType
 import com.android.camera.catalog.domain.sampleCatalog
 import com.android.camera.coretheme.bodyFontFamily
 import com.android.camera.coretheme.monoFontFamily
+import com.questvision.camera.QuestVisionCameraScreen
 import kotlinx.serialization.Serializable
 
 @Composable
@@ -151,17 +153,31 @@ fun CatalogApp() {
         }
     }
 
-    LaunchedEffect(Unit) {
-        if (!hasCameraPermission) {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
-        }
-    }
+    // The original samples catalog stays reachable from QuestVision in debuggable builds only.
+    val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     NavHost(
         navController = navController,
-        startDestination = HomeScreen,
+        startDestination = QuestVisionScreen,
     ) {
+        composable<QuestVisionScreen> {
+            QuestVisionCameraScreen(
+                onOpenSamples =
+                    if (isDebuggable) {
+                        { navController.navigate(HomeScreen) }
+                    } else {
+                        null
+                    },
+            )
+        }
         composable<HomeScreen> {
+            // Requested here rather than at app start so it never races the QuestVision screen's own
+            // permission request (Android drops one of two concurrent requests).
+            LaunchedEffect(Unit) {
+                if (!hasCameraPermission) {
+                    permissionLauncher.launch(Manifest.permission.CAMERA)
+                }
+            }
             Scaffold(containerColor = AppBackground) { innerPadding ->
                 AnimatedContent(
                     targetState = hasCameraPermission,
@@ -444,6 +460,9 @@ private fun PermissionContent(
         }
     }
 }
+
+@Serializable
+object QuestVisionScreen
 
 @Serializable
 object HomeScreen

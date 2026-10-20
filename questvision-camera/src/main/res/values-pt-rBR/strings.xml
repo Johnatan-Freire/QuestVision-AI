@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="questvision_permission_rationale">O QuestVision AI usa a câmera traseira para ler questões na tela do computador. As fotos ficam neste aparelho.</string>
+    <string name="questvision_permission_denied">O acesso à câmera foi negado. Ative-o nas Configurações para usar o QuestVision AI.</string>
+    <string name="questvision_no_back_camera">Este aparelho não tem câmera traseira, necessária para o QuestVision AI.</string>
+    <string name="questvision_camera_error">Não foi possível iniciar a câmera.</string>
+
+    <string name="questvision_status_starting">Iniciando câmera</string>
+    <string name="questvision_status_active">Câmera pronta</string>
+    <string name="questvision_status_capturing">Capturando</string>
+    <string name="questvision_status_closed">Câmera pausada</string>
+    <string name="questvision_status_in_use">Câmera em uso por outro app</string>
+    <string name="questvision_status_disabled">Câmera desativada pelo sistema</string>
+    <string name="questvision_status_unavailable">Câmera indisponível</string>
+
+    <string name="questvision_capture">Capturar foto</string>
+    <string name="questvision_capture_failed">Não foi possível capturar a foto. Tente novamente.</string>
+    <string name="questvision_open_last_capture">Abrir última captura</string>
+    <string name="questvision_open_samples">Abrir exemplos de câmera</string>
+</resources>

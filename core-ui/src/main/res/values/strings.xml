@@ -2,4 +2,17 @@
 <resources>
     <string name="save_feedback_saved">Saved to Photos</string>
     <string name="save_feedback_failed">Couldn\'t save</string>
+
+    <string name="permission_rationale_default">This sample needs camera access to run.</string>
+    <string name="permission_denied_default">Camera access was denied. Enable it in Settings to use this sample.</string>
+    <string name="permission_grant">Grant Permission</string>
+    <string name="permission_open_settings">Open Settings</string>
+
+    <string name="state_unknown_error">Unknown Error</string>
+    <string name="state_retry">Retry</string>
+
+    <string name="review_captured_photo">Captured Photo</string>
+    <string name="review_back">Back</string>
+    <string name="review_retake">Retake</string>
+    <string name="review_done">Done</string>
 </resources>

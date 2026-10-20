@@ -25,7 +25,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.android.camera.coreui.R
 
 /** Full-screen loading spinner shown while a sample initializes. */
 @Composable
@@ -44,7 +46,7 @@ fun ErrorView(
 ) {
     Box(modifier = modifier.fillMaxSize()) {
         Text(
-            text = errorMessage ?: "Unknown Error",
+            text = errorMessage ?: stringResource(R.string.state_unknown_error),
             color = Color.Red,
             modifier = Modifier.align(Alignment.Center),
         )
@@ -55,7 +57,7 @@ fun ErrorView(
                     .align(Alignment.BottomCenter)
                     .padding(32.dp),
         ) {
-            Text("Retry")
+            Text(stringResource(R.string.state_retry))
         }
     }
 }

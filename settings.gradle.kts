@@ -36,8 +36,9 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Camera Samples Catalog"
+rootProject.name = "QuestVision AI"
 include(":app")
+include(":questvision-camera")
 include(":core-camera")
 include(":core-theme")
 include(":core-ui")

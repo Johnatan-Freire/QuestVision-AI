@@ -55,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -63,6 +64,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.android.camera.coreui.R
 
 /**
  * Scaffolds a camera sample: requests [permissions], gates the [content] behind them (showing a
@@ -77,14 +79,16 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
  *
  * The content is responsible for any in-camera chrome (back button, controls) so it composes
  * correctly with full-screen overlays such as a captured-media preview.
+ *
+ * @param api the camera API badge to show at the top; `null` hides it.
  */
 @Composable
 fun CameraSampleScaffold(
     permissions: List<String>,
-    api: CameraApi,
+    api: CameraApi?,
     modifier: Modifier = Modifier,
-    rationale: String = "This sample needs camera access to run.",
-    deniedMessage: String = "Camera access was denied. Enable it in Settings to use this sample.",
+    rationale: String = stringResource(R.string.permission_rationale_default),
+    deniedMessage: String = stringResource(R.string.permission_denied_default),
     content: @Composable BoxScope.() -> Unit,
 ) {
     val context = LocalContext.current
@@ -141,17 +145,26 @@ fun CameraSampleScaffold(
         ) {
             if (hasPermission) {
                 content()
-                ApiBadge(
-                    api = api,
-                    modifier =
-                        Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(top = 12.dp),
-                )
+                if (api != null) {
+                    ApiBadge(
+                        api = api,
+                        modifier =
+                            Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 12.dp),
+                    )
+                }
             } else {
                 PermissionCard(
                     message = if (permanentlyDenied) deniedMessage else rationale,
-                    buttonText = if (permanentlyDenied) "Open Settings" else "Grant Permission",
+                    buttonText =
+                        stringResource(
+                            if (permanentlyDenied) {
+                                R.string.permission_open_settings
+                            } else {
+                                R.string.permission_grant
+                            },
+                        ),
                     onClick = {
                         if (permanentlyDenied) {
                             context.startActivity(

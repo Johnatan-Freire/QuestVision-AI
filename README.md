@@ -1,5 +1,10 @@
 # Android Camera Samples Catalog
 
+> **QuestVision AI fork.** This repository is being turned into **QuestVision AI**, an app that reads
+> exercise questions off a computer screen with the rear camera. The app now opens on the QuestVision
+> camera screen (`:questvision-camera`); the original samples below are kept, unchanged, and are
+> reachable from it in debug builds. See [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
+
 A single, stand-alone Android app that showcases the **Camera2** and **CameraX** APIs through a
 catalog of small, self-contained, **Compose-first** samples. Each sample focuses on one feature and
 reuses a shared camera-scaffolding layer, so adding a new sample means writing the feature — not the

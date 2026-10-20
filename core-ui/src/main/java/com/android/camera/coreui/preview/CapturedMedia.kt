@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -62,6 +63,7 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.android.camera.coretheme.bodyFontFamily
 import com.android.camera.coretheme.monoFontFamily
+import com.android.camera.coreui.R
 import com.android.camera.coreui.controls.ScrimIconButton
 import com.android.camera.coreui.widget.VideoPlayer
 
@@ -85,7 +87,7 @@ fun CapturedImagePreview(
     ) {
         Image(
             bitmap = bitmap.asImageBitmap(),
-            contentDescription = "Captured Photo",
+            contentDescription = stringResource(R.string.review_captured_photo),
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Fit,
         )
@@ -93,7 +95,7 @@ fun CapturedImagePreview(
         ScrimIconButton(
             onClick = onDone,
             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-            contentDescription = "Back",
+            contentDescription = stringResource(R.string.review_back),
             size = 34.dp,
             iconSize = 18.dp,
             modifier =
@@ -132,14 +134,14 @@ fun CapturedImagePreview(
             ReviewActionPill(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Filled.Refresh,
-                label = "Retake",
+                label = stringResource(R.string.review_retake),
                 filled = false,
                 onClick = onRetake,
             )
             ReviewActionPill(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Filled.Check,
-                label = "Done",
+                label = stringResource(R.string.review_done),
                 filled = true,
                 onClick = onDone,
             )
@@ -231,7 +233,7 @@ fun CapturedVideoPreview(
         ScrimIconButton(
             onClick = onDone,
             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-            contentDescription = "Back",
+            contentDescription = stringResource(R.string.review_back),
             size = 34.dp,
             iconSize = 18.dp,
             modifier =
@@ -254,14 +256,14 @@ fun CapturedVideoPreview(
             ReviewActionPill(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Filled.Refresh,
-                label = "Retake",
+                label = stringResource(R.string.review_retake),
                 filled = false,
                 onClick = onRetake,
             )
             ReviewActionPill(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Filled.Check,
-                label = "Done",
+                label = stringResource(R.string.review_done),
                 filled = true,
                 onClick = onDone,
             )

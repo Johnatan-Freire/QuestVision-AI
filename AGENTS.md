@@ -10,6 +10,13 @@ A single, **Compose-first** Android app — the **Camera Samples Catalog** — t
 each sample; every sample is its own Gradle library module and reuses a shared camera / UI / theme
 layer, so adding a sample means writing *the feature*, not the boilerplate.
 
+## QuestVision AI (this fork)
+
+This fork is becoming **QuestVision AI**. `:questvision-camera` (package `com.questvision.camera`) is
+the app's start destination and follows the same UiState → ViewModel → Controller → Screen rules; the
+samples are kept as reference and reachable only in debug builds. Status, decisions and next steps:
+[`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md).
+
 ## TL;DR — rules you must not violate
 
 1. **Viewfinder.** CameraX previews use **`CameraXViewfinder`**; Camera2 previews use the Compose

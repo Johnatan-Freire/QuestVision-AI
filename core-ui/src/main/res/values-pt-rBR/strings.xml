@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="save_feedback_saved">Salvo em Fotos</string>
+    <string name="save_feedback_failed">Não foi possível salvar</string>
+
+    <string name="permission_rationale_default">Este exemplo precisa de acesso à câmera.</string>
+    <string name="permission_denied_default">O acesso à câmera foi negado. Ative-o nas Configurações para usar este exemplo.</string>
+    <string name="permission_grant">Conceder permissão</string>
+    <string name="permission_open_settings">Abrir Configurações</string>
+
+    <string name="state_unknown_error">Erro desconhecido</string>
+    <string name="state_retry">Tentar novamente</string>
+
+    <string name="review_captured_photo">Foto capturada</string>
+    <string name="review_back">Voltar</string>
+    <string name="review_retake">Descartar</string>
+    <string name="review_done">Concluir</string>
+</resources>

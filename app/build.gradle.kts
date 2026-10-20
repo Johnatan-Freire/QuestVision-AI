@@ -27,7 +27,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.android.camera.catalog"
+        applicationId = "com.questvision.ai"
         minSdk = 23
         targetSdk = 37
         versionCode = 1
@@ -78,6 +78,10 @@ dependencies {
     ksp(libs.hilt.compiler)
 
     implementation(project(":core-theme"))
+
+    // QuestVision AI (start destination)
+    implementation(project(":questvision-camera"))
+
     implementation(project(":samples:camerax-media3effects"))
     implementation(project(":samples:camerax-rawcapture"))
     implementation(project(":samples:camerax-slowmotion"))
