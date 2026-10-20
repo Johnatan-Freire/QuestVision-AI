@@ -1,6 +1,6 @@
 # QuestVision AI — Status do projeto
 
-_Última atualização: 2026-10-20 · Fase 1 (fundação do app Android) — build validado; teste no aparelho pendente_
+_Última atualização: 2026-10-20 · Fase 1 (fundação do app Android) — build validado; teste no aparelho concluído (relatado pelo usuário)_
 
 ## 1. Objetivo
 
@@ -197,9 +197,12 @@ seção 8.
 | Item | Situação |
 | --- | --- |
 | Compilação, formatação, testes unitários | ✅ Executados (acima) |
-| Instalação no aparelho | **Pendente**: nenhum aparelho conectado ao ADB |
-| Inicialização, preview, foco, zoom, captura, revisão, retenção | **Pendente** (aparelho físico) |
-| Permissões (conceder / negar / negar permanentemente) | **Pendente** (aparelho, interação humana) |
+| Instalação no aparelho | ✅ Feita pelo usuário em um Samsung Galaxy M52 5G via ADB (2026-10-20) |
+| Inicialização, preview, foco, zoom, captura, revisão, retenção | ✅ "Tudo funcionou", segundo o usuário (2026-10-20) |
+| Permissões (conceder / negar / negar permanentemente) | ✅ Roteiro abaixo executado pelo usuário (2026-10-20) |
+
+O teste no aparelho foi executado e relatado pelo usuário, sem acompanhamento via ADB nesta sessão.
+Por isso não há logs registrados aqui.
 
 ### Roteiro de teste no aparelho (requer interação humana)
 
@@ -233,7 +236,6 @@ seção 8.
 
 ## 8. Limitações conhecidas
 
-- Preview, foco, zoom, captura e retenção **ainda não foram testados em aparelho**.
 - O release ainda empacota os samples, e com eles `INTERNET`, `ACCESS_NETWORK_STATE`, `WAKE_LOCK` e
   o `MlKitInitProvider`, que inicializa no startup. A solução definitiva é tornar os samples
   `debugImplementation` e mover o catálogo para `src/debug`, ou removê-los do app.
@@ -245,8 +247,7 @@ seção 8.
 
 ## 9. Próximas etapas
 
-1. **Teste no aparelho** (seção 6): conectar o celular com depuração USB, instalar o APK, executar o
-   roteiro e coletar `logcat`.
+1. ~~Teste no aparelho~~: concluído pelo usuário em 2026-10-20.
 2. Opcional antes da Fase 2: tirar os samples do build de release (seção 8).
 3. Fase 2 — **Detection**: `ImageAnalysis` no controller com um detector barato de mudança de cena
    (diferença de luminância/hash perceptual em baixa resolução) + estabilização (cena parada por N
