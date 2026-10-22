@@ -16,6 +16,39 @@
     <string name="questvision_capture">Capturar foto</string>
     <string name="questvision_capture_failed">Não foi possível capturar a foto. Tente novamente.</string>
     <string name="questvision_keep_capture">Manter</string>
-    <string name="questvision_open_last_capture">Abrir última captura</string>
     <string name="questvision_open_samples">Abrir exemplos de câmera</string>
+
+    <string name="questvision_monitor_start">Iniciar monitoramento</string>
+    <string name="questvision_monitor_pause">Pausar</string>
+    <string name="questvision_monitor_resume">Retomar</string>
+    <string name="questvision_monitor_stop">Encerrar</string>
+    <string name="questvision_monitor_count">Auto: %1$d</string>
+    <string name="questvision_monitor_unavailable">O monitoramento automático não é suportado neste aparelho.</string>
+    <string name="questvision_session_monitoring">Monitorando</string>
+    <string name="questvision_session_change">Alteração detectada</string>
+    <string name="questvision_session_stabilizing">Estabilizando</string>
+    <string name="questvision_session_capturing">Captura automática</string>
+    <string name="questvision_session_paused">Monitoramento pausado</string>
+    <string name="questvision_session_error">Monitoramento interrompido: falha na captura</string>
+    <string name="questvision_auto_capture_saved">Captura automática salva (%1$d)</string>
+
+    <string name="questvision_open_history">Histórico de capturas</string>
+    <string name="questvision_history_title">Histórico</string>
+    <string name="questvision_history_back">Voltar à câmera</string>
+    <string name="questvision_history_empty">Nenhuma captura ainda. As capturas aparecem aqui assim que são salvas, manuais ou automáticas.</string>
+    <string name="questvision_history_auto">Auto</string>
+    <string name="questvision_history_auto_numbered">Auto nº %1$d</string>
+    <string name="questvision_history_manual">Manual</string>
+    <string name="questvision_history_unlabeled">Anterior</string>
+    <string name="questvision_history_preserved">Mantida</string>
+    <string name="questvision_history_session_stats">Sessão %1$s · mudanças %2$d · fotos %3$d · novas %4$d · repetidas %5$d · ilegíveis %6$d · falhas %7$d</string>
+    <string name="questvision_history_retention">Só as %1$d capturas mais recentes não mantidas ficam guardadas; abra uma e toque em Manter para preservá-la.</string>
+    <plurals name="questvision_history_count">
+        <item quantity="one">%1$d foto</item>
+        <item quantity="other">%1$d fotos</item>
+    </plurals>
+    <string name="questvision_session_verifying">Lendo texto</string>
+    <string name="questvision_duplicate_ignored">Questão repetida — foto descartada</string>
+    <string name="questvision_unreadable_ignored">Texto ilegível — foto descartada</string>
+    <string name="questvision_text_read_failed">Não foi possível ler o texto — tentando de novo</string>
 </resources>

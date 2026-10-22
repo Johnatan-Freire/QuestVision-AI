@@ -17,10 +17,12 @@ package com.questvision.camera
 
 import android.content.Context
 import android.util.Log
+import android.util.Size
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.CameraState
 import androidx.camera.core.FocusMeteringAction
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
@@ -41,6 +43,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.Observer
+import com.questvision.camera.detection.DetectionConfig
+import com.questvision.camera.detection.LumaFrame
+import com.questvision.camera.detection.LumaFrameAnalyzer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,11 +54,16 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 private const val TAG = "QuestVisionCamera"
 
 /** High enough that compression artifacts don't blur small glyphs on a photographed monitor. */
 private const val JPEG_QUALITY = 95
+
+/** Analysis frames only feed a 128×96 grid; a small stream keeps CPU, memory and bandwidth low. */
+private val ANALYSIS_TARGET_SIZE = Size(640, 480)
 
 /** Camera events the controller reports back; implemented by [QuestVisionCameraViewModel]. */
 interface CameraSessionListener {
@@ -71,6 +81,12 @@ interface CameraSessionListener {
     fun onCaptureSaved(file: File)
 
     fun onCaptureFailed(file: File)
+
+    /** A sampled analysis frame, delivered on the main thread while frame analysis is enabled. */
+    fun onFrameAnalyzed(frame: LumaFrame)
+
+    /** The device can't run frame analysis alongside preview and capture. */
+    fun onFrameAnalysisUnavailable()
 }
 
 @Composable
@@ -84,14 +100,16 @@ fun rememberQuestVisionCameraController(
     }
 
 /**
- * Owns the CameraX session for QuestVision: the rear camera bound to a [Preview] and an
- * [ImageCapture] tuned for legible text (highest resolution, max-quality mode, no flash).
+ * Owns the CameraX session for QuestVision: the rear camera bound to a [Preview], an [ImageCapture]
+ * tuned for legible text (highest resolution, max-quality mode, no flash) and a low-resolution
+ * [ImageAnalysis] used for screen-change detection while monitoring.
  */
 @Stable
 class QuestVisionCameraController(
     context: Context,
     private val lifecycleOwner: LifecycleOwner,
     private val listener: CameraSessionListener,
+    private val detectionConfig: DetectionConfig = DetectionConfig(),
 ) {
     private val appContext = context.applicationContext
     private val mainExecutor = ContextCompat.getMainExecutor(appContext)
@@ -142,6 +160,28 @@ class QuestVisionCameraController(
                     .build(),
             ).build()
 
+    // Only the latest frame matters for change detection; older ones are dropped, never queued.
+    private val imageAnalysis =
+        ImageAnalysis
+            .Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setResolutionSelector(
+                ResolutionSelector
+                    .Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            ANALYSIS_TARGET_SIZE,
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                        ),
+                    ).build(),
+            ).build()
+
+    private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+
+    // Cleared once binding with analysis fails, so later rebinds go straight to the fallback.
+    private var isAnalysisSupported = true
+
     private val cameraStateObserver =
         Observer<CameraState> { state -> listener.onCameraStatusChanged(state.toCameraStatus()) }
 
@@ -170,13 +210,7 @@ class QuestVisionCameraController(
             try {
                 detachObservers()
                 provider.unbindAll()
-                val boundCamera =
-                    provider.bindToLifecycle(
-                        lifecycleOwner,
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview,
-                        imageCapture,
-                    )
+                val boundCamera = bindUseCases(provider)
                 camera = boundCamera
                 isTapToFocusSupported = boundCamera.supportsTapToFocus()
                 boundCamera.cameraInfo.cameraState.observe(lifecycleOwner, cameraStateObserver)
@@ -186,6 +220,23 @@ class QuestVisionCameraController(
                 Log.e(TAG, "Use case binding failed", exc)
                 listener.onBindFailed()
             }
+        }
+    }
+
+    /**
+     * Starts or stops delivering sampled analysis frames to the listener. Each start uses a fresh
+     * analyzer so sampling restarts; without an analyzer CameraX drops analysis frames immediately.
+     */
+    fun setFrameAnalysisEnabled(enabled: Boolean) {
+        if (enabled) {
+            imageAnalysis.setAnalyzer(
+                analysisExecutor,
+                LumaFrameAnalyzer(detectionConfig) { frame ->
+                    mainExecutor.execute { listener.onFrameAnalyzed(frame) }
+                },
+            )
+        } else {
+            imageAnalysis.clearAnalyzer()
         }
     }
 
@@ -248,8 +299,39 @@ class QuestVisionCameraController(
     }
 
     fun release() {
+        imageAnalysis.clearAnalyzer()
         closeCamera()
         providerScope.cancel()
+        analysisExecutor.shutdown()
+    }
+
+    /**
+     * Binds preview + capture + analysis. If the device can't stream all three at once, falls back to
+     * preview + capture so manual capture keeps working, and reports analysis as unavailable.
+     */
+    private fun bindUseCases(provider: ProcessCameraProvider): Camera {
+        if (isAnalysisSupported) {
+            try {
+                return provider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    imageCapture,
+                    imageAnalysis,
+                )
+            } catch (exc: IllegalArgumentException) {
+                Log.w(TAG, "Preview + capture + analysis unsupported; binding without analysis", exc)
+                provider.unbindAll()
+                isAnalysisSupported = false
+                listener.onFrameAnalysisUnavailable()
+            }
+        }
+        return provider.bindToLifecycle(
+            lifecycleOwner,
+            CameraSelector.DEFAULT_BACK_CAMERA,
+            preview,
+            imageCapture,
+        )
     }
 
     private fun detachObservers() {

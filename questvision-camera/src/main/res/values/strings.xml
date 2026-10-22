@@ -18,6 +18,39 @@
     <string name="questvision_capture">Capture photo</string>
     <string name="questvision_capture_failed">Couldn\'t capture the photo. Try again.</string>
     <string name="questvision_keep_capture">Keep</string>
-    <string name="questvision_open_last_capture">Open last capture</string>
     <string name="questvision_open_samples">Open camera samples</string>
+
+    <string name="questvision_monitor_start">Start monitoring</string>
+    <string name="questvision_monitor_pause">Pause</string>
+    <string name="questvision_monitor_resume">Resume</string>
+    <string name="questvision_monitor_stop">Stop</string>
+    <string name="questvision_monitor_count">Auto: %1$d</string>
+    <string name="questvision_monitor_unavailable">Automatic monitoring isn\'t supported on this device.</string>
+    <string name="questvision_session_monitoring">Monitoring</string>
+    <string name="questvision_session_change">Change detected</string>
+    <string name="questvision_session_stabilizing">Stabilizing</string>
+    <string name="questvision_session_capturing">Auto capture</string>
+    <string name="questvision_session_paused">Monitoring paused</string>
+    <string name="questvision_session_error">Monitoring stopped: capture failed</string>
+    <string name="questvision_auto_capture_saved">Auto capture saved (%1$d)</string>
+
+    <string name="questvision_open_history">Capture history</string>
+    <string name="questvision_history_title">History</string>
+    <string name="questvision_history_back">Back to camera</string>
+    <string name="questvision_history_empty">No captures yet. Captures appear here as soon as they are saved, manual or automatic.</string>
+    <string name="questvision_history_auto">Auto</string>
+    <string name="questvision_history_auto_numbered">Auto #%1$d</string>
+    <string name="questvision_history_manual">Manual</string>
+    <string name="questvision_history_unlabeled">Earlier</string>
+    <string name="questvision_history_preserved">Kept</string>
+    <string name="questvision_history_session_stats">Session %1$s · changes %2$d · photos %3$d · new %4$d · repeated %5$d · unreadable %6$d · failed %7$d</string>
+    <string name="questvision_history_retention">Only the %1$d newest captures not kept are stored; open one and tap Keep to preserve it.</string>
+    <plurals name="questvision_history_count">
+        <item quantity="one">%1$d photo</item>
+        <item quantity="other">%1$d photos</item>
+    </plurals>
+    <string name="questvision_session_verifying">Reading text</string>
+    <string name="questvision_duplicate_ignored">Same question as before — photo discarded</string>
+    <string name="questvision_unreadable_ignored">Text not readable — photo discarded</string>
+    <string name="questvision_text_read_failed">Couldn\'t read the text — trying again</string>
 </resources>
