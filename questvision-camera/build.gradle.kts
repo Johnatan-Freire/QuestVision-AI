@@ -48,6 +48,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    testOptions {
+        // ViewModel tests run on the JVM: android.util.Log/LruCache become no-ops instead of throwing.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 kotlin {
@@ -69,5 +73,14 @@ dependencies {
     implementation(project(":core-camera"))
     implementation(project(":core-ui"))
 
+    // On-device OCR (bundled Latin model: works offline, nothing leaves the phone).
+    implementation(libs.mlkit.text.recognition)
+
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+
+    // On-device check of the OCR deduplication against real captures (see RealCapturesOcrTest).
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 }
