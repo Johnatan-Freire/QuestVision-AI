@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ backup rules. QuestVision keeps captures and the encrypted OpenAI key in
+     no_backup/, which Android never backs up; it is excluded explicitly anyway, together with the
+     app databases (OCR text and AI answers), which are exported manually instead. The Keystore key
+     that encrypts the API key is never backed up, so a restored copy could not be decrypted. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="no_backup/" />
+        <exclude domain="database" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="no_backup/" />
+        <exclude domain="database" path="." />
+    </device-transfer>
+</data-extraction-rules>

@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -59,6 +60,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -98,6 +100,7 @@ import com.android.camera.coreui.state.ErrorView
 import com.android.camera.coreui.state.LoadingView
 import com.android.camera.coreui.state.UnsupportedView
 import com.questvision.camera.detection.MonitoringState
+import com.questvision.camera.settings.AiSettingsPanel
 import kotlinx.coroutines.delay
 
 private const val NOTICE_VISIBLE_MS = 3_000L
@@ -122,6 +125,7 @@ fun QuestVisionCameraScreen(
     viewModel: QuestVisionCameraViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var showSettings by rememberSaveable { mutableStateOf(false) }
 
     CameraSampleScaffold(
         permissions = CameraPermissions.PHOTO,
@@ -153,6 +157,7 @@ fun QuestVisionCameraScreen(
                     state = state,
                     viewModel = viewModel,
                     onOpenSamples = onOpenSamples,
+                    onOpenSettings = { showSettings = true },
                 )
                 state.history?.let { entries ->
                     BackHandler(onBack = viewModel::closeHistory)
@@ -177,6 +182,10 @@ fun QuestVisionCameraScreen(
                         doneLabel = stringResource(R.string.questvision_keep_capture),
                     )
                 }
+                // On top of everything; the camera and monitoring keep running underneath.
+                if (showSettings) {
+                    AiSettingsPanel(onDismiss = { showSettings = false })
+                }
             }
         }
     }
@@ -187,6 +196,7 @@ private fun CameraContent(
     state: QuestVisionCameraUiState.Previewing,
     viewModel: QuestVisionCameraViewModel,
     onOpenSamples: (() -> Unit)?,
+    onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -269,7 +279,9 @@ private fun CameraContent(
                 )
             },
             top = {
-                if (!useSidePanel) TopBar(state = state, onOpenSamples = onOpenSamples)
+                if (!useSidePanel) {
+                    TopBar(state = state, onOpenSamples = onOpenSamples, onOpenSettings = onOpenSettings)
+                }
             },
             controls = {
                 // Hidden under history/review so taps on the overlay can't reach the controls beneath.
@@ -279,6 +291,7 @@ private fun CameraContent(
                             state = state,
                             viewModel = viewModel,
                             onOpenSamples = onOpenSamples,
+                            onOpenSettings = onOpenSettings,
                             panelHeight = availableHeight,
                         )
                     } else {
@@ -349,6 +362,7 @@ private fun SidePanel(
     state: QuestVisionCameraUiState.Previewing,
     viewModel: QuestVisionCameraViewModel,
     onOpenSamples: (() -> Unit)?,
+    onOpenSettings: () -> Unit,
     panelHeight: Dp,
     modifier: Modifier = Modifier,
 ) {
@@ -373,6 +387,8 @@ private fun SidePanel(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     ViewfinderTitleChip(text = stringResource(R.string.questvision_app_name))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    SettingsButton(onClick = onOpenSettings)
                     if (onOpenSamples != null) {
                         Spacer(modifier = Modifier.width(8.dp))
                         ScrimIconButton(
@@ -413,6 +429,21 @@ private fun SidePanel(
             }
         }
     }
+}
+
+@Composable
+private fun SettingsButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    ScrimIconButton(
+        onClick = onClick,
+        imageVector = Icons.Filled.Settings,
+        contentDescription = stringResource(R.string.questvision_open_settings),
+        size = 34.dp,
+        iconSize = 18.dp,
+        modifier = modifier,
+    )
 }
 
 /** Opens the capture history; always available, also during monitoring. */
@@ -492,6 +523,7 @@ private fun NoticeText(
 private fun TopBar(
     state: QuestVisionCameraUiState.Previewing,
     onOpenSamples: (() -> Unit)?,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -504,6 +536,8 @@ private fun TopBar(
         ViewfinderTitleChip(text = stringResource(R.string.questvision_app_name))
         Spacer(modifier = Modifier.weight(1f))
         StatusChip(state = state)
+        Spacer(modifier = Modifier.width(8.dp))
+        SettingsButton(onClick = onOpenSettings)
         if (onOpenSamples != null) {
             Spacer(modifier = Modifier.width(8.dp))
             ScrimIconButton(

@@ -1,6 +1,6 @@
 # QuestVision AI — Status do projeto
 
-_Última atualização: 2026-10-22 (encerramento das Fases 2 e 2.5) · Fase 1 concluída e validada no aparelho · Fase 2 (detecção automática) implementada e com build/testes ok; **validação no aparelho pendente**_
+_Última atualização: 2026-10-24 (Fase 3.1 concluída e validada no aparelho) · Fase 1 concluída e validada no aparelho · Fase 2 (detecção automática) implementada e com build/testes ok; **validação no aparelho pendente**_
 
 ## 1. Objetivo
 
@@ -671,6 +671,93 @@ Pendente para o próximo contato com o aparelho:
 
 Fotos e logs dos testes de campo **não** foram versionados; ficam só no aparelho e em cópias locais
 temporárias.
+
+## 3i. Fase 3.1: configuração e proteção da chave da OpenAI (2026-10-22, concluída em 2026-10-24)
+
+Decisões aprovadas para a Fase 3:
+- arquitetura **local-first, sem backend**, uso pessoal no Galaxy M52;
+- OpenAI, com `gpt-6-luna` como principal e `gpt-6.1-sol` sob demanda;
+- Flex desligado e orçamento planejado de US$ 5/mês;
+- capturas automáticas processadas automaticamente; manuais só sob comando.
+
+Esta etapa entrega **só a configuração**: nenhuma chamada à OpenAI, Room ou WorkManager. **Nenhum
+crédito é consumido.**
+
+### Implementado (pacote `com.questvision.camera.settings`)
+
+| Arquivo | Responsabilidade |
+| --- | --- |
+| `ApiKey.kt` | `ApiKey` (`value class` cujo `toString()` mostra só `sk-…1234`), validação local do formato (prefixo `sk-`, tamanho, caracteres) e máscara |
+| `SecretCipher.kt` | `AndroidKeystoreSecretCipher`: **AES-256-GCM** com chave gerada no **Android Keystore** (StrongBox quando houver, senão TEE), não exportável, IV aleatório por cifragem, tag de 128 bits; formato `SealedSecret` versionado |
+| `OpenAiKeyRepository.kt` | Salva só o texto cifrado em `noBackupFilesDir/secure/openai_api_key.bin` (gravação atômica). Estados `Missing` / `Stored(máscara)` / `Unreadable`. `clear()` apaga o arquivo **e** a chave do Keystore. `useKey { }` para a Fase 3.3 |
+| `AiSettings.kt` | `AiModel` com preços oficiais (2026-10-22) para estimativas; `AiSettings` (principal, avançado, automático, Flex, orçamento) em SharedPreferences, que não guarda segredos |
+| `AiSettingsViewModel.kt` | Estado da tela (só a máscara, nunca a chave), salvar, substituir, remover, escolha de modelos; módulo Hilt |
+| `AiSettingsPanel.kt` | Seção **OpenAI** e **Modelos** no `SettingsOverlay` do `:core-ui`, aberta pelo botão ⚙ na barra superior (portrait) ou no painel lateral (landscape) |
+
+Proteções aplicadas:
+- **Campo da chave:** em modo senha, sem corretor; guardado só na memória (`remember`, não
+  `rememberSaveable`), para nunca ir ao estado salvo da Activity; limpo logo após salvar.
+- **Captura de tela:** `FLAG_SECURE` enquanto o painel está aberto (bloqueia capturas, gravação e a
+  miniatura de recentes).
+- **Remoção** com confirmação.
+- **Sem logs da chave:** nenhum ponto do código registra a chave, e mensagens de erro e
+  `toString()` só mostram a máscara (coberto por testes).
+- **Backup:** `data_extraction_rules.xml` (Android 12+, nuvem e transferência entre aparelhos) e
+  `backup_rules.xml` excluem `no_backup/` e os bancos de dados. A chave do Keystore nunca vai para
+  backup.
+- **Nada no APK:** nenhuma chave no código, no Git, no APK nem em `BuildConfig` (que nem é gerado).
+  Verificado no APK: nenhuma string `sk-…` nos `.dex`.
+- **Permissões:** nenhuma nova (`INTERNET` só será declarada pelo app na Fase 3.3).
+
+### Riscos residuais (deliberados e documentados no aviso da tela)
+
+- A chave fica decifrada **na memória** durante o uso; não há como evitar numa chamada direta à API.
+- **O APK de debug** permite, com o celular desbloqueado e depuração USB ativa, acoplar um depurador
+  e chamar a decifração. Para o dia a dia: **APK de release assinado sem debug** e depuração USB
+  desligada.
+- A chave do Keystore **não exige biometria nem aparelho desbloqueado**, para o processamento em
+  segundo plano funcionar. Celular desbloqueado nas mãos de outra pessoa = app utilizável.
+- Root ou malware com root podem ler a memória do processo.
+- O que realmente limita o prejuízo:
+  - **projeto dedicado na OpenAI com limite rígido mensal** (US$ 5): ao atingir, a API responde 429
+    `project_spend_limit_exceeded`, com pequena tolerância;
+  - chave criada dentro desse projeto, com permissões restritas;
+  - créditos pré-pagos sem recarga automática;
+  - revogação imediata se houver suspeita.
+
+### Como configurar o limite na OpenAI
+
+1. platform.openai.com → **Projects** → criar "QuestVision".
+2. No projeto: **Limits** → limite **rígido** (hard limit) mensal de US$ 5 e alertas.
+3. **API keys** do projeto → criar chave com permissões **Restricted** (só o necessário para
+   Responses, se o painel permitir).
+4. **Billing:** créditos pré-pagos, recarga automática desligada.
+5. Colar a chave no app (⚙ → OpenAI → Salvar chave).
+
+### Testes
+
+- **JVM (107/107, 18 novos):**
+  - `ApiKeyTest`: validação, máscara, chave ausente de `toString()` e erros, formato
+    `SealedSecret`, padrões aprovados;
+  - `OpenAiKeyRepositoryTest`: só texto cifrado no disco, sobrevive a reinício, substituição,
+    remoção destrói arquivo e chave, entrada inválida não grava, dados indecifráveis ou
+    corrompidos viram `Unreadable` sem crash, falha do Keystore não grava nada;
+  - `AiSettingsViewModelTest`: estado só com a máscara, erro de entrada preserva a chave anterior,
+    modelos persistidos.
+- **Instrumentado** (`AndroidKeystoreSecretCipherTest`, 4 testes): Keystore real, IV diferente a cada
+  cifragem, adulteração rejeitada, chave destruída invalida dados antigos, arquivo em `no_backup`
+  sem texto puro.
+
+`spotlessCheck` ✅ · `:questvision-camera:testDebugUnitTest` ✅ · `:app:assembleDebug` ✅.
+
+### Validação no aparelho (relatada pelo usuário, Galaxy M52 SM-M526B, Android 13)
+
+- **5 testes instrumentados** executados no aparelho físico, **sem falhas**: os 4 de
+  `AndroidKeystoreSecretCipherTest` mais o `RealCapturesOcrTest`.
+- Validação manual do app confirmada.
+- **Nenhuma chamada à API da OpenAI** e **nenhum crédito consumido**.
+
+**Fase 3.1 concluída.** Próxima: Fase 3.2 (Room/SQLite), ainda não iniciada.
 
 ## 4. Funcionalidades implementadas
 
