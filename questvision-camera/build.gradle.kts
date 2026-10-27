@@ -58,6 +58,12 @@ kotlin {
     jvmToolchain(17)
 }
 
+ksp {
+    // Versioned schema history (questvision-camera/schemas), so every future migration is explicit
+    // and checked instead of destructive.
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.material3)
@@ -76,6 +82,11 @@ dependencies {
     // On-device OCR (bundled Latin model: works offline, nothing leaves the phone).
     implementation(libs.mlkit.text.recognition)
 
+    // Local persistence of questions and processing state (SQLite in the app's private storage).
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 
@@ -83,4 +94,5 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.androidx.room.testing)
 }

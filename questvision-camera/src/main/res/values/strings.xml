@@ -44,7 +44,7 @@
     <string name="questvision_history_unlabeled">Earlier</string>
     <string name="questvision_history_preserved">Kept</string>
     <string name="questvision_history_session_stats">Session %1$s · changes %2$d · photos %3$d · new %4$d · repeated %5$d · unreadable %6$d · failed %7$d</string>
-    <string name="questvision_history_retention">Only the %1$d newest captures not kept are stored; open one and tap Keep to preserve it.</string>
+    <string name="questvision_history_retention">Only the %1$d newest captures not kept are stored, plus those still waiting for the AI; open one and tap Keep to preserve it.</string>
     <plurals name="questvision_history_count">
         <item quantity="one">%1$d photo</item>
         <item quantity="other">%1$d photos</item>
@@ -77,4 +77,5 @@
     <string name="questvision_settings_advanced_model">Advanced (on demand)</string>
     <string name="questvision_settings_budget">Planned monthly budget</string>
     <string name="questvision_settings_not_sending_yet">Nothing is sent to OpenAI in this version: the key and models are only stored. No credits are used.</string>
+    <string name="questvision_record_failed">Photo saved, but not recorded in the history database — it will be recovered on the next start</string>
 </resources>

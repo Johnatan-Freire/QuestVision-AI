@@ -757,7 +757,287 @@ Proteções aplicadas:
 - Validação manual do app confirmada.
 - **Nenhuma chamada à API da OpenAI** e **nenhum crédito consumido**.
 
-**Fase 3.1 concluída.** Próxima: Fase 3.2 (Room/SQLite), ainda não iniciada.
+**Fase 3.1 concluída.** Próxima: Fase 3.2 (Room/SQLite), seção 3j.
+
+## 3j. Fase 3.2: persistência local com Room/SQLite (2026-10-24, aprovada em 2026-10-27)
+
+Aprovada para versionamento em 2026-10-27, após a validação no aparelho. **Nenhuma chamada à OpenAI ou ao Telegram**, nenhuma
+permissão nova e nenhum crédito consumido. Os algoritmos de detecção e OCR não mudaram.
+
+### Arquitetura
+
+- **Banco** `questvision.db` (Room 2.8.5, SQLite) na pasta privada `databases/`, já excluída de
+  backup e transferência pelas regras da Fase 3.1 (inalteradas).
+- **Fotos continuam arquivos** em `noBackupFilesDir/captures` (e `kept/`). O banco guarda só o
+  **caminho relativo** (`capture_….jpg` ou `kept/capture_….jpg`), **nunca JPEG como BLOB**.
+- **`QuestionRepository`** (`@Singleton`) é o único ponto de escrita. Tudo roda no `Dispatchers.IO`,
+  serializado por um `Mutex`; a câmera e a thread principal nunca esperam o banco.
+- **O banco é o índice do histórico.** O nome do arquivo continua registrando origem, sessão e
+  sequência, e por isso um arquivo sem linha sempre pode ser recuperado.
+- **Sem migração destrutiva:** o builder não tem `fallbackToDestructiveMigration`. Uma mudança de
+  esquema sem `Migration` faz o app falhar em vez de apagar o histórico.
+- **Esquema exportado** em `questvision-camera/schemas/…/1.json`, para versionar e validar as
+  migrações futuras.
+
+### Tabelas
+
+**`capture_sessions`**: `id` (PK, rótulo `yyyyMMdd-HHmmss` usado nos nomes de arquivo),
+`started_at`, `ended_at`.
+
+**`questions`**:
+
+| Coluna | Conteúdo |
+| --- | --- |
+| `id` | UUID (PK) |
+| `session_id` | FK → `capture_sessions.id` (`RESTRICT`); nulo em captura manual fora de sessão |
+| `sequence` | número da captura automática na sessão |
+| `question_number` | "Questão 05" → 5, quando o OCR encontra uma linha que começa assim |
+| `origin` | `MANUAL` / `AUTOMATIC` / `UNKNOWN` |
+| `image_path` | caminho relativo, **único** |
+| `captured_at`, `updated_at` | epoch ms |
+| `ocr_text` | texto do ML Kit, linha a linha (nulo sem OCR) |
+| `dedup_key` | SimHash do texto normalizado (16 hex), para achar a mesma questão entre sessões |
+| `ai_status` | `NOT_REQUESTED`, `PENDING`, `PROCESSING`, `ANSWERED`, `NEEDS_REVIEW`, `FAILED` |
+| `ai_response`, `ai_model`, `ai_answered_at` | reservados para a Fase 3.3/3.4 (nulos hoje) |
+| `attempts`, `last_error` | tentativas e **código** do último erro (nunca chave ou payload) |
+| `telegram_status` | `NOT_REQUESTED`, `PENDING`, `SENT`, `FAILED` (fase futura) |
+
+Os índices cobrem `image_path` (único), `session_id`, `captured_at`, `dedup_key` e `ai_status`.
+
+### Fluxo
+
+- **Questão automática nova** (OCR confirmou): a linha é gravada como `AUTOMATIC` / **`PENDING`**,
+  com texto, número e `dedup_key`. O aviso "salva" só aparece depois da gravação.
+- **Duplicada ou ilegível:** a foto é apagada como antes e **nunca gera linha**.
+- **Captura manual:** `MANUAL` / **`NOT_REQUESTED`** (só será enviada sob comando, como decidido).
+- **Manter:** move o arquivo para `kept/` e depois atualiza o caminho.
+- **Descartar:** apaga o arquivo e depois a linha.
+- **Retenção:** as 20 recentes, como antes, mas fotos `PENDING`/`PROCESSING` são **protegidas**
+  até a IA vê-las, assim como as fotos **sem linha no banco** (gravação falha), até o próximo
+  reconcile importá-las. As linhas das fotos apagadas são removidas junto.
+- **Ao abrir o app, `reconcile()`:**
+  - importa arquivos sem linha como `NOT_REQUESTED` (nunca enviados sozinhos);
+  - reaponta linhas cujo arquivo foi movido (`kept/`);
+  - remove linhas cujo arquivo sumiu.
+
+  Log: `QuestVisionDetect: database reconciled: ReconcileReport(...)`.
+- **Falha ao gravar:** uma nova tentativa. Se persistir, o aviso `RECORD_FAILED` aparece, a foto
+  fica no disco e é importada no próximo início. O log registra só a classe da exceção.
+
+### Consistência após interrupções
+
+| Interrupção | Estado deixado | Reparo |
+| --- | --- | --- |
+| Entre salvar a foto e gravar a linha | arquivo sem linha | importado no próximo início |
+| Entre apagar o arquivo e a linha | linha órfã | removida no próximo início |
+| Entre mover para `kept/` e atualizar o caminho | caminho antigo | reapontado pelo nome do arquivo, sem perder estado nem texto |
+| No meio de uma transação | nada (rollback do SQLite) | coberto por teste instrumentado |
+
+### Compatibilidade
+
+- Na primeira abertura após a atualização, todas as fotos existentes, incluindo `kept/` e os nomes
+  antigos `capture_<timestamp>.jpg`, entram no banco como `NOT_REQUESTED`. **Nada é apagado** e nada
+  é enviado à IA.
+- O histórico mostra os mesmos itens, na mesma ordem (mais recente primeiro).
+
+### Arquivos
+
+- **Novos** (`com.questvision.camera.data`):
+  - `QuestionEntities.kt`;
+  - `QuestionDao.kt`;
+  - `QuestVisionDatabase.kt` (inclui o módulo Hilt e `TransactionRunner`);
+  - `QuestionRepository.kt`.
+- **Esquema:** `questvision-camera/schemas/com.questvision.camera.data.QuestVisionDatabase/1.json`.
+- **Alterados:**
+  - `CaptureRepository.kt`: a retenção aceita caminhos protegidos e devolve os apagados; novos
+    `relativePath` e `resolve`;
+  - `QuestVisionCameraViewModel.kt`: reconcile ao iniciar, sessões, gravação e histórico vindo do
+    banco;
+  - `QuestVisionCameraUiState.kt` e `QuestVisionCameraScreen.kt`: aviso `RECORD_FAILED`;
+  - `strings.xml` (en e pt-BR);
+  - `gradle/libs.versions.toml` e `questvision-camera/build.gradle.kts` (Room via KSP).
+
+### Testes
+
+- **JVM: 129/129** (22 novos), com DAO em memória (`FakeQuestionDao`) que reproduz unicidade, FK e
+  falhas de escrita injetadas:
+  - **`QuestionRepositoryTest` (18):**
+    - inserção e leitura de todos os campos;
+    - gravação idempotente;
+    - persistência entre instâncias;
+    - estados de IA;
+    - `dedup_key` entre sessões;
+    - consulta por sessão;
+    - ordem do histórico;
+    - exclusão consistente;
+    - exclusão e preservação interrompidas;
+    - retenção que protege `PENDING`;
+    - importação do histórico antigo;
+    - falha temporária (nova tentativa) e persistente (aviso e recuperação);
+    - foto com gravação falha nunca apagada pela retenção antes de ser importada;
+    - mesma questão em outra sessão gravada de novo;
+    - número da questão e texto.
+  - **`QuestVisionCameraViewModelTest` (+4):**
+    - questão nova gravada `PENDING` com texto;
+    - manual gravada `NOT_REQUESTED`;
+    - duplicada sem linha;
+    - falha do banco gera o aviso e a foto é recuperada ao reiniciar.
+- **Instrumentados no Galaxy M52 (Android 13), 11/11 sem falhas (2026-10-24):**
+  - `QuestionDaoTest` (7): Room/SQLite real, todos os campos, unicidade do caminho, FK, ordenação e
+    filtros, atualizações e exclusões, dados após fechar e reabrir o arquivo, rollback de transação,
+    e o repositório de ponta a ponta com arquivos reais (retenção que protege `PENDING`, reinício,
+    reconcile sem reparos);
+  - `AndroidKeystoreSecretCipherTest` (4), como regressão da Fase 3.1.
+- `spotlessCheck` ✅ · `:questvision-camera:testDebugUnitTest` ✅ · `:app:assembleDebug` ✅.
+- APK sem strings `sk-…`. Regras de backup inalteradas.
+- **APK instalado no M52 por cima da versão anterior:** o app abriu, criou `databases/questvision.db`
+  e registrou `ReconcileReport(imported=0, repointed=0, removed=0)`. O aparelho **não tinha fotos
+  salvas** (a pasta `captures` estava vazia), então a importação do histórico antigo **só foi testada
+  na JVM**, não com fotos reais.
+
+### Revisão pré-commit (2026-10-24)
+
+1. **Validações manuais no M52:** não puderam ser feitas em 2026-10-24 porque o aparelho se
+   desconectou. Foram **executadas em 2026-10-26**: ver "Validação no aparelho" abaixo.
+2. **Deduplicação no banco:**
+   - `dedup_key` tem índice **não único** (`index_questions_dedup_key`, `unique=false` no
+     `1.json`) e o fluxo de captura nunca o consulta. Ele **não impede** gravar uma questão.
+   - A deduplicação que descarta fotos continua sendo a da sessão (`acceptedTexts`, limpa em
+     `MonitoringSession.start()`). A mesma questão numa sessão nova é gravada de novo, com o mesmo
+     `dedup_key` ligando as duas linhas.
+   - Coberto por `aLegitimateQuestionAgainInANewSession_isRecordedAgain` (JVM) e por
+     `queries_orderAndFilter` (SQLite real, duas linhas com a mesma chave).
+   - Ressalva para o cache da Fase 3.4: SimHash igual não garante texto igual. Antes de reaproveitar
+     uma resposta, é preciso confirmar com `QuestionTextMatcher`.
+3. **Falhas de persistência não apagam fotos:**
+   - `record()` não apaga nada em caso de falha.
+   - **Defeito encontrado e corrigido:** durante a sessão, uma foto sem linha não estava protegida
+     e contava para a retenção das 20. Agora `prune()` protege todo arquivo sem linha até o
+     reconcile.
+   - **Questões recuperadas sem OCR:** entram como `NOT_REQUESTED`, sem `ocr_text`,
+     `question_number` nem `dedup_key`, e com origem, sessão e sequência lidas do nome do arquivo.
+     Não são enviadas à IA automaticamente e, a partir daí, seguem a retenção normal das 20
+     recentes, como uma captura manual.
+4. **`PENDING` protegidas:** confirmado no código (`AiStatus.keepsPhoto`) e nos testes JVM e
+   instrumentado.
+   - **Risco para a Fase 3.4:** o armazenamento cresce sem limite enquanto a fila não for processada
+     (cada questão nova é um JPEG em resolução máxima, da ordem de MB).
+   - A Fase 3.4 deve processar a fila e definir um teto (quantidade, idade ou espaço livre), com
+     aviso ao usuário.
+5. **Esquema e migração:**
+   - `questvision-camera/schemas/com.questvision.camera.data.QuestVisionDatabase/1.json` está no
+     working tree, não é ignorado pelo Git e deve entrar no commit;
+   - `room.schemaLocation` está configurado;
+   - nenhuma ocorrência de `fallbackToDestructiveMigration`, `dropAllTables` ou `deleteDatabase` no
+     código do app.
+6. **Testes refeitos após a correção:** `spotlessCheck` ✅ · `testDebugUnitTest` 129/129 ✅ ·
+   `:app:assembleDebug` ✅ · `assembleDebugAndroidTest` ✅. Os instrumentados foram reexecutados no
+   M52 em 2026-10-26: **11/11** ✅.
+
+### Validação no aparelho (2026-10-26, Galaxy M52 SM-M526B, Android 13)
+
+APK com a correção de retenção, instalado por cima da versão anterior. Em cada etapa, o script de
+evidências copiou o banco (via `run-as`) e listou os arquivos, e o logcat foi gravado. A cada
+reabertura, a comparação usou `force-stop` seguido de novo lançamento (processo novo).
+
+**Antes de começar:**
+- **Instrumentados:** `QuestionDaoTest` (7) e `AndroidKeystoreSecretCipherTest` (4): **11/11**
+  ✅, com o APK de teste gerado depois da correção.
+- **Estado inicial:** `ReconcileReport(imported=0, repointed=0, removed=0)`, banco vazio, nenhuma
+  foto.
+
+| # | Esperado | Observado | Resultado |
+| --- | --- | --- | --- |
+| 1 | Questões do monitor gravadas `AUTOMATIC`/`PENDING` com OCR; os mesmos itens após reabrir | Ver detalhes abaixo | ✅ |
+| 2 | Manter: arquivo em `kept/` e linha reapontada, sem perder estado. Descartar: arquivo e linha removidos. Persistência após reabrir | Ver detalhes abaixo | ✅ |
+| 3 | Manual gravada `MANUAL`/`NOT_REQUESTED`, sem sessão nem OCR; persiste após reabrir | Linha `capture_…144353_657_manual.jpg` com esses valores; histórico com 13 fotos (manual primeiro) após reabrir; banco idêntico | ✅ |
+| 4 | Encerramento forçado logo após captura: banco e arquivos consistentes na reabertura, nada perdido | Ver detalhes abaixo | ✅ |
+
+**1. Monitoramento e persistência após reabrir:**
+- **Sessão `20261026-143646`:** 6 questões novas.
+- **Sessão `20261026-143906`:** 7 novas e 4 duplicadas descartadas. As duplicadas não geraram linha
+  e seus arquivos foram apagados.
+- **No banco:** 13 linhas `PENDING` com OCR (497–1331 caracteres) e `dedup_key`; 13 arquivos; as
+  duas sessões com `ended_at`.
+- **Após reabrir:** `ReconcileReport(0,0,0)`, banco idêntico ao de antes, histórico com "13 fotos".
+- Nenhum `could not record` e nenhum crash.
+
+**2. Manter e descartar:**
+- **Descartar nº 9:** arquivo e linha removidos.
+- **Manter nº 10:** a linha passou a apontar para `kept/…_10.jpg` e manteve `PENDING`, OCR e
+  `question_number=6`.
+- **Após reabrir:** `ReconcileReport(0,0,0)`, banco idêntico, histórico com 12 fotos e nº 10
+  marcado como mantido.
+
+**4. Encerramento forçado:**
+- **12 execuções** de captura manual + `force-stop`, com atrasos de 0,2 s a 1,8 s:
+  - até 1,2 s: a foto ainda não estava gravada, e não ficou nem arquivo nem linha;
+  - 1,4–1,8 s: arquivo e linha já gravados, `ReconcileReport(0,0,0)`;
+  - **em 1,3 s, interrompido entre o arquivo e a linha:** reabertura com
+    `ReconcileReport(imported=1, …)` e foto importada como `MANUAL`/`NOT_REQUESTED`.
+- **Exclusão e preservação interrompidas**, simuladas com `run-as rm` e `mv` para `kept/` com o app
+  parado: `ReconcileReport(imported=0, repointed=1, removed=1)`.
+- Ao final, 17 linhas = 17 arquivos, e nenhum arquivo de 0 byte.
+
+**Retenção com `PENDING` (verificação adicional):**
+- **Execução:** 22 capturas manuais seguidas.
+- **Resultado:** os **mesmos 12 caminhos `PENDING`** antes e depois; exatamente **20** manuais não
+  mantidas; 33 linhas = 33 arquivos.
+- **Armazenamento:** a pasta `captures` já ocupa **111 MB** (fotos de 2–4,8 MB). É uma evidência
+  concreta do risco de crescimento para a Fase 3.4.
+
+**Atualização do app sem perda:** depois da correção do texto do histórico, o APK foi reinstalado
+com `install -r`. O banco ficou idêntico e o reconcile não fez nada.
+
+**Problemas encontrados no aparelho:**
+- **Texto do histórico desatualizado (corrigido):** dizia que só as 20 recentes ficam guardadas,
+  mas as fotos que aguardam a IA também ficam. Novo texto em en e pt-BR: "…além das que aguardam a
+  IA". Conferido na tela. Só muda texto.
+- **Capturas extras de telas intermediárias:** a página rolou com duas questões visíveis, e
+  houve linhas a mais do que questões:
+  - nº 4 da sessão 1: tela parcial, 24 palavras, sem número;
+  - nº 9 e nº 10 da sessão 2: a mesma Questão 06, primeiro incompleta e depois completa;
+  - nº 1 da sessão 2: sem número lido, não foi possível determinar se é a Questão 01.
+
+  Esses casos vêm da detecção e do OCR das Fases 2 e 2.5, não da persistência, e ficam para
+  avaliação futura. Nenhum algoritmo foi alterado.
+- **Fotos manuais escuras:** as capturas manuais saíram pretas porque a câmera estava apontada para
+  uma área escura. Não tem relação com a persistência.
+- **Avisos `SQLite…` no logcat** são de outros processos (Play Services e framework), não do app.
+
+### Riscos e limitações
+
+- **Fotos `PENDING` acumulam até a Fase 3.4**, porque a retenção não as apaga. Cada sessão
+  automática soma suas questões ao armazenamento. Mitigação futura: processar a fila ou limitar o
+  tempo na fila.
+- **Linha perdida numa falha de gravação:** a foto nunca é apagada antes de ser importada, mas é
+  recuperada como `NOT_REQUESTED`, sem o texto do OCR, e não é enviada à IA automaticamente. Depois
+  disso segue a retenção normal das 20 recentes. O usuário é avisado por `RECORD_FAILED`.
+- **Mudanças de esquema** exigem `Migration` e incremento de versão. O JSON exportado deve ir para o
+  Git junto com o código.
+- **Teste de migração:** ainda não há `MigrationTestHelper`. Ele só faz sentido a partir da versão 2
+  do esquema.
+- **Busca por `dedup_key`** é exata (mesmo SimHash). A comparação aproximada entre sessões fica para
+  o cache de respostas.
+
+### Pendências futuras (registradas na aprovação, 2026-10-27)
+
+1. **Questões incompletas e capturas extras:** telas parciais ou em rolagem geram linhas a mais
+   (ver "Problemas encontrados no aparelho"). Avaliar na detecção e no OCR (Fases 2 e 2.5).
+2. **Crescimento do armazenamento:** fotos `PENDING` não entram na retenção. A Fase 3.4 deve
+   processar a fila e definir um teto (quantidade, idade ou espaço livre), com aviso ao usuário.
+3. **Recuperação de questões sem OCR:** fotos importadas pelo reconcile após uma falha ficam
+   `NOT_REQUESTED`, sem texto. Definir como reprocessar o OCR e quando enviá-las à IA.
+4. **Similaridade textual antes de reutilizar respostas:** um `dedup_key` igual não garante texto
+   igual. Antes de reaproveitar uma resposta da IA, confirmar com `QuestionTextMatcher`.
+
+A Fase 3.3 só começa com nova autorização.
+
+### Preparação para as Fases 3.3/3.4
+
+A fila da IA é `questionsWithAiStatus(PENDING)`, em ordem de captura. Os resultados vão por
+`updateAiStatus` (tentativas e erro) e `saveAiResult` (resposta, modelo, data), e o status do
+Telegram por `updateTelegramStatus`.
 
 ## 4. Funcionalidades implementadas
 

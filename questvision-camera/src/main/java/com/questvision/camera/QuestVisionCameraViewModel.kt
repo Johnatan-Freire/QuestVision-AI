@@ -19,12 +19,15 @@ import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.questvision.camera.data.AiStatus
+import com.questvision.camera.data.QuestionRepository
 import com.questvision.camera.detection.CaptureTicket
 import com.questvision.camera.detection.FrameMetrics
 import com.questvision.camera.detection.LumaFrame
 import com.questvision.camera.detection.MonitoringSession
 import com.questvision.camera.detection.MonitoringState
 import com.questvision.camera.detection.TextDecision
+import com.questvision.camera.recognition.RecognizedText
 import com.questvision.camera.recognition.TextFingerprint
 import com.questvision.camera.recognition.TextRecognitionEngine
 import com.questvision.camera.recognition.TextVerdict
@@ -56,6 +59,7 @@ class QuestVisionCameraViewModel
     constructor(
         private val captureRepository: CaptureRepository,
         private val textRecognition: TextRecognitionEngine,
+        private val questionRepository: QuestionRepository,
     ) : ViewModel(),
         CameraSessionListener {
         private val _uiState =
@@ -91,7 +95,11 @@ class QuestVisionCameraViewModel
 
         init {
             viewModelScope.launch {
-                captureRepository.pruneRecentCaptures()
+                // Repair what an interruption may have left between files and database (and import
+                // captures from before the database), then apply retention.
+                val report = questionRepository.reconcile()
+                Log.i(DETECTION_TAG, "database reconciled: $report")
+                questionRepository.prune()
                 _uiState.value = previewingState()
             }
         }
@@ -118,7 +126,12 @@ class QuestVisionCameraViewModel
                     monitoringSession.state == MonitoringState.IDLE ||
                         monitoringSession.state == MonitoringState.ERROR
                 monitoringSession.start()
-                if (startsNewSession) sessionLabel = formatSessionLabel(System.currentTimeMillis())
+                if (startsNewSession) {
+                    val startedAt = System.currentTimeMillis()
+                    val label = formatSessionLabel(startedAt)
+                    sessionLabel = label
+                    viewModelScope.launch { questionRepository.startSession(label, startedAt) }
+                }
             }
 
         fun pauseMonitoring() = updateMonitoring { monitoringSession.pause() }
@@ -130,6 +143,9 @@ class QuestVisionCameraViewModel
                 monitoringSession.stop()
                 // An unverified photo is never kept as a valid capture.
                 verificationJob?.cancel()
+                sessionLabel?.let { label ->
+                    viewModelScope.launch { questionRepository.endSession(label, System.currentTimeMillis()) }
+                }
             }
 
         /**
@@ -163,7 +179,7 @@ class QuestVisionCameraViewModel
             closeReview()
             if (file == null) return
             viewModelScope.launch {
-                captureRepository.preserve(file)
+                questionRepository.preserve(file)
                 refreshHistory()
             }
         }
@@ -174,7 +190,7 @@ class QuestVisionCameraViewModel
             closeReview()
             if (file == null) return
             viewModelScope.launch {
-                captureRepository.delete(file)
+                questionRepository.delete(file)
                 refreshHistory()
             }
         }
@@ -239,10 +255,15 @@ class QuestVisionCameraViewModel
         override fun onCaptureSaved(file: File) {
             val auto = autoCapture?.takeIf { it.second == file }
             if (auto == null) {
-                // Manual capture: show it so the user can keep or discard it.
+                // Manual capture: show it so the user can keep or discard it. Recorded without OCR and
+                // never sent to the AI on its own (only on command, in a later phase).
                 updatePreviewing { it.copy(pendingCapture = null) }
                 openReview(file)
-                onCaptureStored()
+                val sessionId = sessionLabel.takeIf { monitoringSession.state != MonitoringState.IDLE }
+                viewModelScope.launch {
+                    record(file, CaptureOrigin.MANUAL, sessionId, sequence = null, ocr = null, AiStatus.NOT_REQUESTED)
+                    onCaptureStored()
+                }
                 return
             }
             autoCapture = null
@@ -286,10 +307,13 @@ class QuestVisionCameraViewModel
                 viewModelScope.launch {
                     val startedNanos = System.nanoTime()
                     var decided = false
+                    var recognized: RecognizedText? = null
                     try {
                         val text =
                             try {
-                                TextFingerprint.of(withTimeout(OCR_TIMEOUT_MS) { textRecognition.recognize(file) })
+                                val raw = withTimeout(OCR_TIMEOUT_MS) { textRecognition.recognize(file) }
+                                recognized = raw
+                                TextFingerprint.of(raw)
                             } catch (exc: TimeoutCancellationException) {
                                 Log.w(OCR_TAG, "OCR timed out for ${file.name}")
                                 null
@@ -316,7 +340,7 @@ class QuestVisionCameraViewModel
 
                             else -> {
                                 logDecision(file, text, decision, elapsedMs)
-                                applyDecision(file, decision)
+                                applyDecision(ticket, file, decision, recognized)
                             }
                         }
                     } finally {
@@ -327,11 +351,16 @@ class QuestVisionCameraViewModel
         }
 
         private suspend fun applyDecision(
+            ticket: CaptureTicket,
             file: File,
             decision: TextDecision,
+            recognized: RecognizedText?,
         ) {
             if (decision.keep) {
-                notify(Notice.AUTO_CAPTURE_SAVED)
+                // A new question: recorded with its OCR text, waiting for the AI (phase 3.4).
+                val recorded =
+                    record(file, CaptureOrigin.AUTOMATIC, sessionLabel, ticket.sequence, recognized, AiStatus.PENDING)
+                if (recorded) notify(Notice.AUTO_CAPTURE_SAVED)
                 onCaptureStored()
             } else {
                 captureRepository.delete(file)
@@ -388,11 +417,33 @@ class QuestVisionCameraViewModel
             viewModelScope.launch { captureRepository.delete(file) }
         }
 
+        /**
+         * Records a stored photo in the database. A failure is never silent: the user sees a notice,
+         * the photo stays on disk, and the next start imports it (see QuestionRepository.reconcile).
+         */
+        private suspend fun record(
+            file: File,
+            origin: CaptureOrigin,
+            sessionId: String?,
+            sequence: Int?,
+            ocr: RecognizedText?,
+            aiStatus: AiStatus,
+        ): Boolean {
+            val capturedAt = parseCaptureEntry(file, isPreserved = false).capturedAtMs
+            val result = questionRepository.recordCapture(file, origin, sessionId, sequence, capturedAt, ocr, aiStatus)
+            result.exceptionOrNull()?.let { error ->
+                // The exception type only: no OCR text or paths beyond the file name.
+                Log.w(DETECTION_TAG, "could not record ${file.name}: ${error.javaClass.simpleName}")
+                notify(Notice.RECORD_FAILED)
+            }
+            return result.isSuccess
+        }
+
         /** Applies retention after a new capture and refreshes an open history. */
         private fun onCaptureStored() {
             viewModelScope.launch {
                 // The new capture is the newest, so retention can never remove it here.
-                captureRepository.pruneRecentCaptures()
+                questionRepository.prune()
                 refreshHistory()
             }
         }
@@ -400,7 +451,7 @@ class QuestVisionCameraViewModel
         private fun refreshHistory() {
             if ((_uiState.value as? QuestVisionCameraUiState.Previewing)?.history == null) return
             viewModelScope.launch {
-                val entries = captureRepository.history()
+                val entries = questionRepository.history()
                 updatePreviewing { if (it.history != null) it.copy(history = entries) else it }
             }
         }

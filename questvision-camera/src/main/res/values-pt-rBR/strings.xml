@@ -42,7 +42,7 @@
     <string name="questvision_history_unlabeled">Anterior</string>
     <string name="questvision_history_preserved">Mantida</string>
     <string name="questvision_history_session_stats">Sessão %1$s · mudanças %2$d · fotos %3$d · novas %4$d · repetidas %5$d · ilegíveis %6$d · falhas %7$d</string>
-    <string name="questvision_history_retention">Só as %1$d capturas mais recentes não mantidas ficam guardadas; abra uma e toque em Manter para preservá-la.</string>
+    <string name="questvision_history_retention">Só as %1$d capturas mais recentes não mantidas ficam guardadas, além das que aguardam a IA; abra uma e toque em Manter para preservá-la.</string>
     <plurals name="questvision_history_count">
         <item quantity="one">%1$d foto</item>
         <item quantity="other">%1$d fotos</item>
@@ -75,4 +75,5 @@
     <string name="questvision_settings_advanced_model">Avançado (sob demanda)</string>
     <string name="questvision_settings_budget">Orçamento mensal planejado</string>
     <string name="questvision_settings_not_sending_yet">Nada é enviado à OpenAI nesta versão: a chave e os modelos são apenas guardados. Nenhum crédito é consumido.</string>
+    <string name="questvision_record_failed">Foto salva, mas não registrada no banco do histórico — será recuperada ao reabrir o app</string>
 </resources>

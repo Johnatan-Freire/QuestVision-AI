@@ -79,9 +79,9 @@ data class CaptureEntry(
  * every new capture. A capture the user chooses to keep is moved to `captures/kept/`, which is never
  * pruned.
  *
- * Each file name records how it was taken (see [captureFileName]), so the history needs no database
- * and survives restarts. Files from before labeling (`capture_<timestamp>.jpg`) remain valid and are
- * listed as [CaptureOrigin.UNKNOWN].
+ * Each file name records how it was taken (see [captureFileName]), so a photo can always be traced
+ * back even without its database row (see `QuestionRepository.reconcile`). Files from before labeling
+ * (`capture_<timestamp>.jpg`) remain valid and are listed as [CaptureOrigin.UNKNOWN].
  */
 @Singleton
 class CaptureRepository internal constructor(
@@ -156,11 +156,33 @@ class CaptureRepository internal constructor(
             if (file.renameTo(target)) target else file
         }
 
-    /** Applies the retention policy to unpreserved captures; returns how many were deleted. */
-    suspend fun pruneRecentCaptures(): Int =
+    /**
+     * Applies the retention policy to unpreserved captures, never touching [protectedPaths] (relative
+     * paths, e.g. photos the AI has not processed yet; they neither count toward nor fall under the
+     * limit). Returns the relative paths it deleted.
+     */
+    suspend fun pruneRecentCaptures(protectedPaths: Set<String> = emptySet()): List<String> =
         withContext(ioDispatcher) {
-            pruneOldest(listCaptures(captureDirectory), MAX_RECENT_CAPTURES)
+            val candidates = listCaptures(captureDirectory).filter { relativePath(it) !in protectedPaths }
+            oldestBeyond(candidates, MAX_RECENT_CAPTURES)
+                .filter { it.delete() }
+                .map { file ->
+                    thumbnails.remove(file.path)
+                    relativePath(file)
+                }
         }
+
+    /** Every stored capture file, preserved or not. */
+    suspend fun allCaptureFiles(): List<File> = withContext(ioDispatcher) { listCaptures(captureDirectory) + listCaptures(keptDirectory) }
+
+    /** [file]'s path relative to the captures folder, as stored in the database (`kept/x.jpg`). */
+    fun relativePath(file: File): String = file.relativeTo(captureDirectory).invariantSeparatorsPath
+
+    /** The file a relative path from the database points to. */
+    fun resolve(relativePath: String): File = File(captureDirectory, relativePath)
+
+    /** Whether [file] is in the preserved folder. */
+    fun isPreserved(file: File): Boolean = file.parentFile == keptDirectory
 
     suspend fun delete(file: File) {
         withContext(ioDispatcher) {
@@ -249,11 +271,13 @@ internal fun calculateInSampleSize(
 internal fun pruneOldest(
     files: List<File>,
     keep: Int,
-): Int =
-    files
-        .sortedByDescending { it.lastModified() }
-        .drop(keep)
-        .count { it.delete() }
+): Int = oldestBeyond(files, keep).count { it.delete() }
+
+/** All but the [keep] most recently modified [files]. */
+internal fun oldestBeyond(
+    files: List<File>,
+    keep: Int,
+): List<File> = files.sortedByDescending { it.lastModified() }.drop(keep)
 
 private val CAPTURE_NAME =
     Regex("""^capture_(\d{8}_\d{6}_\d{3})(?:_(manual|auto)(?:_([^_]+)_(\d+))?)?\.$CAPTURE_EXTENSION$""")

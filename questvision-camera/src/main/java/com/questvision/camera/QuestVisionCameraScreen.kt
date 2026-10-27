@@ -503,11 +503,15 @@ private fun NoticeText(
                 Notice.TEXT_READ_FAILED -> {
                     stringResource(R.string.questvision_text_read_failed)
                 }
+
+                Notice.RECORD_FAILED -> {
+                    stringResource(R.string.questvision_record_failed)
+                }
             },
         style = style,
         color =
             when (notice) {
-                Notice.CAPTURE_FAILED, Notice.TEXT_READ_FAILED -> MaterialTheme.colorScheme.error
+                Notice.CAPTURE_FAILED, Notice.TEXT_READ_FAILED, Notice.RECORD_FAILED -> MaterialTheme.colorScheme.error
 
                 Notice.AUTO_CAPTURE_SAVED -> MaterialTheme.colorScheme.primary
 

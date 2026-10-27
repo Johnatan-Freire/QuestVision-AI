@@ -15,6 +15,10 @@
  */
 package com.questvision.camera
 
+import com.questvision.camera.data.AiStatus
+import com.questvision.camera.data.DirectTransactions
+import com.questvision.camera.data.FakeQuestionDao
+import com.questvision.camera.data.QuestionRepository
 import com.questvision.camera.detection.MonitoringState
 import com.questvision.camera.detection.SyntheticScreens
 import com.questvision.camera.recognition.OcrScreens
@@ -52,6 +56,9 @@ class QuestVisionCameraViewModelTest {
     private var clockMs = 0L
     private val ocr = FakeTextEngine()
 
+    /** Outlives each ViewModel, like the database file across app restarts. */
+    private val dao = FakeQuestionDao()
+
     /** Stands in for ML Kit: returns the text of the question on screen, or fails, or waits. */
     private class FakeTextEngine : TextRecognitionEngine {
         var text: RecognizedText = RecognizedText(emptyList())
@@ -78,9 +85,12 @@ class QuestVisionCameraViewModelTest {
     }
 
     private fun newViewModel() =
-        QuestVisionCameraViewModel(CaptureRepository(root, dispatcher), ocr).apply {
-            onCameraStatusChanged(CameraStatus.ACTIVE)
-        }
+        CaptureRepository(root, dispatcher)
+            .let { captures ->
+                QuestVisionCameraViewModel(captures, ocr, QuestionRepository(dao, DirectTransactions, captures, dispatcher))
+            }.apply {
+                onCameraStatusChanged(CameraStatus.ACTIVE)
+            }
 
     private val QuestVisionCameraViewModel.state
         get() = uiState.value as QuestVisionCameraUiState.Previewing
@@ -369,5 +379,73 @@ class QuestVisionCameraViewModelTest {
 
         assertEquals(1, viewModel.state.autoCaptureCount)
         assertEquals(MonitoringState.PAUSED, viewModel.state.monitoring)
+    }
+
+    @Test
+    fun newQuestion_isRecordedPendingForTheAi_withItsText() {
+        val viewModel = newViewModel()
+        viewModel.startMonitoring()
+
+        val file = viewModel.showUntilCaptureRequested(seed = 2)
+        viewModel.cameraSaves(file)
+
+        val row = dao.questions.single()
+        assertEquals(file.name, row.imagePath)
+        assertEquals(CaptureOrigin.AUTOMATIC, row.origin)
+        assertEquals(viewModel.state.session, row.sessionId)
+        assertEquals(1, row.sequence)
+        assertEquals(2, row.questionNumber)
+        assertEquals(AiStatus.PENDING, row.aiStatus)
+        assertTrue(row.ocrText!!.contains("Redes de Computadores"))
+        assertTrue(viewModel.state.session!! in dao.sessions)
+    }
+
+    @Test
+    fun manualCapture_isRecordedButNotSentToTheAi() {
+        val viewModel = newViewModel()
+
+        viewModel.capture()
+        viewModel.cameraSaves(viewModel.state.pendingCapture!!)
+
+        val row = dao.questions.single()
+        assertEquals(CaptureOrigin.MANUAL, row.origin)
+        assertEquals(AiStatus.NOT_REQUESTED, row.aiStatus)
+        assertNull(row.sessionId)
+        assertNull(row.ocrText)
+    }
+
+    @Test
+    fun duplicateQuestion_leavesNoRow() {
+        val viewModel = newViewModel()
+        viewModel.startMonitoring()
+        viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1))
+        // Same text again after a visual change: discarded, never recorded.
+        val duplicate = viewModel.showUntilCaptureRequested(seed = 2, text = OcrScreens.screen(1))
+        viewModel.cameraSaves(duplicate)
+
+        assertEquals(Notice.DUPLICATE_IGNORED, viewModel.state.notice)
+        assertEquals(1, dao.questions.size)
+        assertFalse(duplicate.exists())
+    }
+
+    @Test
+    fun databaseFailure_isReported_andThePhotoIsKeptForRecovery() {
+        val viewModel = newViewModel()
+        viewModel.startMonitoring()
+        dao.failingWrites = 10
+
+        val file = viewModel.showUntilCaptureRequested(seed = 1)
+        viewModel.cameraSaves(file)
+
+        assertEquals(Notice.RECORD_FAILED, viewModel.state.notice)
+        assertTrue(file.exists())
+        assertTrue(dao.questions.isEmpty())
+
+        // The next start imports it, so the history does not lose it.
+        dao.failingWrites = 0
+        val restarted = newViewModel()
+        restarted.openHistory()
+        assertEquals(listOf(file), restarted.state.history!!.map { it.file })
+        assertEquals(AiStatus.NOT_REQUESTED, dao.questions.single().aiStatus)
     }
 }

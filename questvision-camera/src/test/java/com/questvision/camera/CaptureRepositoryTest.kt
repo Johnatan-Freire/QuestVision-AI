@@ -119,7 +119,7 @@ class CaptureRepositoryTest {
 
             val deleted = repository.pruneRecentCaptures()
 
-            assertEquals(5, deleted)
+            assertEquals(5, deleted.size)
             assertTrue(recent.take(5).none { it.exists() })
             assertTrue(recent.drop(5).all { it.exists() })
             // Preserved captures are older than every pruned one, and still untouched.

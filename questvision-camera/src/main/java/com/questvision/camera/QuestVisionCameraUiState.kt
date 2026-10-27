@@ -49,6 +49,9 @@ enum class Notice {
 
     /** An automatic photo's text could not be read; it was discarded and will be retried. */
     TEXT_READ_FAILED,
+
+    /** A photo was saved but its database record failed; it is recovered on the next start. */
+    RECORD_FAILED,
 }
 
 sealed interface QuestVisionCameraUiState {
