@@ -16,6 +16,7 @@
 package com.questvision.camera.data
 
 import android.content.Context
+import androidx.room.AutoMigration
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -31,14 +32,20 @@ import javax.inject.Singleton
  * The app's SQLite database, in its private `databases/` folder (excluded from backups since phase
  * 3.1). Schema changes must come with a [androidx.room.migration.Migration] or auto-migration: there
  * is deliberately no destructive fallback, so an update never wipes the history.
+ *
+ * Versions: 1 = sessions and questions (phase 3.2); 2 = adds `ai_requests` (phase 3.3), an additive
+ * auto-migration that leaves existing rows untouched.
  */
 @Database(
-    entities = [CaptureSessionEntity::class, QuestionEntity::class],
-    version = 1,
+    entities = [CaptureSessionEntity::class, QuestionEntity::class, AiRequestEntity::class],
+    version = 2,
     exportSchema = true,
+    autoMigrations = [AutoMigration(from = 1, to = 2)],
 )
 abstract class QuestVisionDatabase : RoomDatabase() {
     abstract fun questionDao(): QuestionDao
+
+    abstract fun aiRequestDao(): AiRequestDao
 
     companion object {
         const val NAME = "questvision.db"
@@ -64,6 +71,9 @@ internal object DatabaseModule {
 
     @Provides
     fun provideQuestionDao(database: QuestVisionDatabase): QuestionDao = database.questionDao()
+
+    @Provides
+    fun provideAiRequestDao(database: QuestVisionDatabase): AiRequestDao = database.aiRequestDao()
 
     @Provides
     fun provideTransactionRunner(database: QuestVisionDatabase): TransactionRunner =

@@ -44,7 +44,41 @@ data class ReconcileReport(
     val repointed: Int = 0,
     /** Rows whose photo no longer exists (e.g. a crash between deleting the file and the row). */
     val removed: Int = 0,
+    /** Questions left PROCESSING by a crash, now FAILED (`INTERRUPTED`); never re-sent on their own. */
+    val interrupted: Int = 0,
 )
+
+/**
+ * Token counts OpenAI reported for one response (null when it reported none). [cachedTokens] and
+ * [cacheWriteTokens] are part of [inputTokens]; [reasoningTokens] is part of [outputTokens].
+ */
+data class TokenUsage(
+    val inputTokens: Int?,
+    val cachedTokens: Int?,
+    val outputTokens: Int?,
+    val reasoningTokens: Int?,
+    val cacheWriteTokens: Int? = null,
+)
+
+/** The window of the local request limit: it counts what was sent, so restarting the app resets nothing. */
+const val AI_LIMIT_WINDOW_MS = 24L * 60 * 60 * 1000
+
+/** How [QuestionRepository.beginAiRequest] went. */
+sealed interface AiRequestStart {
+    /** Claimed (PROCESSING) and logged as SENT: the request may now be sent. */
+    data class Started(
+        val requestId: Long,
+    ) : AiRequestStart
+
+    /** [AI_LIMIT_WINDOW_MS] already holds the allowed number of requests: nothing changed. */
+    data object LimitReached : AiRequestStart
+
+    /** The question is already PROCESSING: nothing changed. */
+    data object AlreadyProcessing : AiRequestStart
+}
+
+/** Error code recorded for requests and questions the app stopped in the middle of. */
+const val INTERRUPTED_ERROR = "INTERRUPTED"
 
 /**
  * The persistent record of captured questions: SQLite (Room) for the data, private files for the
@@ -58,6 +92,7 @@ data class ReconcileReport(
 @Singleton
 class QuestionRepository internal constructor(
     private val dao: QuestionDao,
+    private val requests: AiRequestDao,
     private val transactions: TransactionRunner,
     private val captures: CaptureRepository,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -66,11 +101,15 @@ class QuestionRepository internal constructor(
     @Inject
     constructor(
         dao: QuestionDao,
+        requests: AiRequestDao,
         transactions: TransactionRunner,
         captures: CaptureRepository,
-    ) : this(dao, transactions, captures, Dispatchers.IO)
+    ) : this(dao, requests, transactions, captures, Dispatchers.IO)
 
     private val mutex = Mutex()
+
+    /** Whether this process already closed the AI attempts an earlier process left in flight. */
+    private var aiRecovered = false
 
     private suspend fun <T> serialized(block: suspend () -> T): T = mutex.withLock { withContext(ioDispatcher) { block() } }
 
@@ -141,6 +180,11 @@ class QuestionRepository internal constructor(
 
     suspend fun question(file: File): QuestionEntity? = serialized { dao.questionByImagePath(captures.relativePath(file)) }
 
+    suspend fun question(id: String): QuestionEntity? = serialized { dao.question(id) }
+
+    /** The photo of [question] on disk. */
+    fun fileOf(question: QuestionEntity): File = captures.resolve(question.imagePath)
+
     suspend fun questionsInSession(sessionId: String): List<QuestionEntity> = serialized { dao.questionsInSession(sessionId) }
 
     /** Earlier questions with the same OCR fingerprint, across sessions (the future local answer cache). */
@@ -152,6 +196,115 @@ class QuestionRepository internal constructor(
         attempts: Int,
         lastError: String?,
     ): Boolean = serialized { dao.updateAiStatus(id, status, attempts, lastError, clock()) == 1 }
+
+    /**
+     * Gets a request to the AI under way, in one transaction: checks the limit of [maxRequests] per
+     * [AI_LIMIT_WINDOW_MS], marks the question PROCESSING (counting the attempt) unless it already is,
+     * and logs the request as SENT. The same question is never claimed twice at once, and two callers
+     * can never both pass the limit. Finish with [completeAi] or [failAi].
+     */
+    suspend fun beginAiRequest(
+        questionId: String,
+        model: String,
+        mode: AnalysisMode,
+        maxRequests: Int,
+    ): AiRequestStart =
+        serialized {
+            // Attempts left in flight by an earlier process are closed first, never after a claim.
+            recoverInterruptedAi()
+            transactions.inTransaction {
+                val now = clock()
+                when {
+                    requests.countSince(now - AI_LIMIT_WINDOW_MS) >= maxRequests -> {
+                        AiRequestStart.LimitReached
+                    }
+
+                    dao.claimForAi(questionId, now) != 1 -> {
+                        AiRequestStart.AlreadyProcessing
+                    }
+
+                    else -> {
+                        AiRequestStart.Started(
+                            requests.insert(AiRequestEntity(questionId = questionId, model = model, mode = mode, startedAt = now)),
+                        )
+                    }
+                }
+            }
+        }
+
+    /** Requests started in the last [AI_LIMIT_WINDOW_MS], whatever their outcome. */
+    suspend fun aiRequestsInLimitWindow(): Int = serialized { requests.countSince(clock() - AI_LIMIT_WINDOW_MS) }
+
+    /** Stores the answer of a claimed question and closes its request log entry, atomically. */
+    suspend fun completeAi(
+        questionId: String,
+        requestId: Long,
+        status: AiStatus,
+        response: String,
+        model: String,
+        responseId: String?,
+        httpStatus: Int,
+        usage: TokenUsage?,
+        serviceTier: String?,
+    ) = serialized {
+        transactions.inTransaction {
+            val now = clock()
+            dao.saveAiResult(questionId, status, response, model, now)
+            requests.finish(
+                requestId,
+                AiRequestOutcome.SUCCEEDED,
+                now,
+                null,
+                httpStatus,
+                responseId,
+                usage?.inputTokens,
+                usage?.cachedTokens,
+                usage?.outputTokens,
+                usage?.reasoningTokens,
+                usage?.cacheWriteTokens,
+                serviceTier,
+            )
+        }
+    }
+
+    /**
+     * Ends a claimed attempt with [error]: the question becomes FAILED (photo, OCR text and any earlier
+     * answer kept) and the request log entry, if one was started, records how it ended.
+     */
+    suspend fun failAi(
+        questionId: String,
+        requestId: Long?,
+        error: String,
+        outcome: AiRequestOutcome = AiRequestOutcome.FAILED,
+        httpStatus: Int? = null,
+        responseId: String? = null,
+        usage: TokenUsage? = null,
+        serviceTier: String? = null,
+    ) = serialized {
+        transactions.inTransaction {
+            val now = clock()
+            dao.failAi(questionId, error, now)
+            if (requestId != null) {
+                requests.finish(
+                    requestId,
+                    outcome,
+                    now,
+                    error,
+                    httpStatus,
+                    responseId,
+                    usage?.inputTokens,
+                    usage?.cachedTokens,
+                    usage?.outputTokens,
+                    usage?.reasoningTokens,
+                    usage?.cacheWriteTokens,
+                    serviceTier,
+                )
+            }
+        }
+    }
+
+    /** Requests sent for a question, newest first. */
+    suspend fun aiRequestsFor(questionId: String): List<AiRequestEntity> = serialized { requests.requestsFor(questionId) }
 
     /** Moves a photo to the preserved folder and repoints its row. */
     suspend fun preserve(file: File): File =
@@ -165,11 +318,17 @@ class QuestionRepository internal constructor(
             kept
         }
 
-    /** Deletes a photo and its row: file first, so an interruption leaves only a dangling row. */
-    suspend fun delete(file: File) =
+    /**
+     * Deletes a photo and its row: file first, so an interruption leaves only a dangling row. Refused
+     * (false) while the AI is processing it: the answer, possibly billed, would have nowhere to go.
+     */
+    suspend fun delete(file: File): Boolean =
         serialized {
+            val row = dao.questionByImagePath(captures.relativePath(file))
+            if (row?.aiStatus == AiStatus.PROCESSING) return@serialized false
             captures.delete(file)
-            dao.questionByImagePath(captures.relativePath(file))?.let { dao.deleteQuestion(it.id) }
+            row?.let { dao.deleteQuestion(it.id) }
+            true
         }
 
     /**
@@ -189,12 +348,32 @@ class QuestionRepository internal constructor(
         }
 
     /**
-     * Makes the database match the files: imports photos without a row (from before the database or
+     * Once per process (the repository is a singleton), before any claim: nothing survives a restart in
+     * flight, so close what an earlier process left SENT / PROCESSING, without re-sending. Their outcome
+     * is unknown — OpenAI may have answered and billed them. Running it again later would wrongly close
+     * a request this process is still waiting for. Call with [mutex] held.
+     */
+    private suspend fun recoverInterruptedAi(): Int {
+        if (aiRecovered) return 0
+        val interrupted =
+            transactions.inTransaction {
+                val now = clock()
+                requests.interruptAllSent(now)
+                dao.failAllProcessing(INTERRUPTED_ERROR, now)
+            }
+        aiRecovered = true
+        return interrupted
+    }
+
+    /**
+     * Closes AI attempts a crash left in flight (FAILED / `INTERRUPTED`, never re-sent automatically) and
+     * makes the database match the files: imports photos without a row (from before the database or
      * after an interrupted insert) as [AiStatus.NOT_REQUESTED] — never sent to the AI on their own —,
      * repoints rows whose photo moved, and removes rows whose photo is gone.
      */
     suspend fun reconcile(): ReconcileReport =
         serialized {
+            val interrupted = recoverInterruptedAi()
             val files = captures.allCaptureFiles()
             val byPath = files.associateBy { captures.relativePath(it) }
             val byName = files.groupBy { it.name }
@@ -240,7 +419,7 @@ class QuestionRepository internal constructor(
                 }
                 imported++
             }
-            ReconcileReport(imported, repointed, removed)
+            ReconcileReport(imported, repointed, removed, interrupted)
         }
 
     private fun toEntry(question: QuestionEntity): CaptureEntry =
@@ -257,7 +436,7 @@ class QuestionRepository internal constructor(
 /** The OCR text as plain lines, as stored in the database. */
 internal fun plainText(text: RecognizedText): String = text.lines.joinToString("\n") { line -> line.joinToString(" ") { it.text } }
 
-private val QUESTION_NUMBER = Regex("""^\s*quest[aã]o\s*(?:n[º°o.]?\s*)?(\d{1,3})(?!\d)""", RegexOption.IGNORE_CASE)
+internal val QUESTION_NUMBER = Regex("""^\s*quest[aã]o\s*(?:n[º°o.]?\s*)?(\d{1,3})(?!\d)""", RegexOption.IGNORE_CASE)
 
 /**
  * The question number shown on screen, from the first line that starts with "Questão N" ("Questão 05

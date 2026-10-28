@@ -48,6 +48,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    sourceSets {
+        // The exported Room schemas, so MigrationTestHelper can rebuild every past version on a device.
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
     testOptions {
         // ViewModel tests run on the JVM: android.util.Log/LruCache become no-ops instead of throwing.
         unitTests.isReturnDefaultValues = true
@@ -86,6 +90,10 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+
+    // JSON for the OpenAI Responses API (tree API only: no serialization compiler plugin). HTTP itself is
+    // the platform's HttpURLConnection, so no networking library is added.
+    implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

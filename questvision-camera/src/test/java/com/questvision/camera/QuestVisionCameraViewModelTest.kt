@@ -17,6 +17,7 @@ package com.questvision.camera
 
 import com.questvision.camera.data.AiStatus
 import com.questvision.camera.data.DirectTransactions
+import com.questvision.camera.data.FakeAiRequestDao
 import com.questvision.camera.data.FakeQuestionDao
 import com.questvision.camera.data.QuestionRepository
 import com.questvision.camera.detection.MonitoringState
@@ -87,7 +88,11 @@ class QuestVisionCameraViewModelTest {
     private fun newViewModel() =
         CaptureRepository(root, dispatcher)
             .let { captures ->
-                QuestVisionCameraViewModel(captures, ocr, QuestionRepository(dao, DirectTransactions, captures, dispatcher))
+                QuestVisionCameraViewModel(
+                    captures,
+                    ocr,
+                    QuestionRepository(dao, FakeAiRequestDao(), DirectTransactions, captures, dispatcher),
+                )
             }.apply {
                 onCameraStatusChanged(CameraStatus.ACTIVE)
             }

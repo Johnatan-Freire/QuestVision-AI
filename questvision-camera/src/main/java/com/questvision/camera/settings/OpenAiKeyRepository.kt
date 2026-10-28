@@ -52,6 +52,12 @@ sealed interface ApiKeyState {
     data object Unreadable : ApiKeyState
 }
 
+/** Lends the decrypted key for one use; a seam so the AI analysis can be tested without the Keystore. */
+interface ApiKeySource {
+    /** Runs [block] with the key, or returns null when no usable key is stored. */
+    suspend fun <T> useKey(block: suspend (ApiKey) -> T): T?
+}
+
 /**
  * Stores the personal OpenAI API key encrypted at rest. Only the [SecretCipher] output reaches disk,
  * in `noBackupFilesDir/secure/`, which Android never includes in cloud backups or device transfers.
@@ -62,7 +68,7 @@ class OpenAiKeyRepository internal constructor(
     private val directory: File,
     private val cipher: SecretCipher,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-) {
+) : ApiKeySource {
     @Inject
     constructor(
         @ApplicationContext context: Context,
@@ -110,7 +116,7 @@ class OpenAiKeyRepository internal constructor(
      * Runs [block] with the decrypted key, or returns null when there is no usable key. Callers must
      * not keep, log or persist the key beyond [block].
      */
-    suspend fun <T> useKey(block: suspend (ApiKey) -> T): T? {
+    override suspend fun <T> useKey(block: suspend (ApiKey) -> T): T? {
         val key = mutex.withLock { withContext(ioDispatcher) { decryptOrNull() } } ?: return null
         return block(key)
     }

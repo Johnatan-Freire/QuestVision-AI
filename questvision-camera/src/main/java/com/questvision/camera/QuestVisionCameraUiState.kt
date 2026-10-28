@@ -67,6 +67,8 @@ sealed interface QuestVisionCameraUiState {
         val notice: Notice? = null,
         /** The capture being reviewed, decoded for display; `null` while the viewfinder is shown. */
         val review: Bitmap? = null,
+        /** The photo under [review], for its AI analysis. */
+        val reviewFile: File? = null,
         /** Stored captures, newest first, while the history is open; `null` when it is closed. */
         val history: List<CaptureEntry>? = null,
         val monitoring: MonitoringState = MonitoringState.IDLE,

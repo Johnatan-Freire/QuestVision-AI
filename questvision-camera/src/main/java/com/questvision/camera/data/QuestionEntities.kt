@@ -22,23 +22,56 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.questvision.camera.CaptureOrigin
 
-/** AI processing of a question. Only states the app can reach today or in the next phases. */
+/**
+ * AI processing of a question: `PENDING → PROCESSING → ANSWERED` (or `NEEDS_REVIEW`), and
+ * `PROCESSING → FAILED` on an error. Any state but PROCESSING can be analyzed again on request.
+ */
 enum class AiStatus {
     /** Not to be sent automatically: manual captures (on command only) and captures imported from before. */
     NOT_REQUESTED,
 
-    /** New automatic question waiting for the AI (processed from phase 3.4 on). */
+    /** New automatic question waiting for the AI (sent on request; automatically from phase 3.4 on). */
     PENDING,
+
+    /** A request is in flight. Left over after a crash, it becomes FAILED (`INTERRUPTED`) on the next start. */
     PROCESSING,
     ANSWERED,
 
     /** Answered, but the answer needs a human look (low confidence, illegible, incomplete). */
     NEEDS_REVIEW,
+
+    /** The last attempt failed; `last_error` says why. Nothing is retried without the user. */
     FAILED,
     ;
 
-    /** Its photo must survive the automatic cleanup until the AI has seen it. */
-    val keepsPhoto: Boolean get() = this == PENDING || this == PROCESSING
+    /**
+     * Its photo and row survive the automatic cleanup once the AI is involved: waiting, in flight,
+     * failed or answered. An answer may have been paid for, and the cleanup also deletes the row.
+     */
+    val keepsPhoto: Boolean get() = this != NOT_REQUESTED
+}
+
+/** What a question is sent to the AI as. */
+enum class AnalysisMode {
+    /** The question block of the stored OCR text: cheapest. */
+    TEXT,
+
+    /** The photo itself, downscaled: for formulas, figures or text the OCR got wrong. */
+    IMAGE,
+}
+
+/** How a request to the AI ended. */
+enum class AiRequestOutcome {
+    /** Sent and not finished yet (or the app died meanwhile, until the next start marks it INTERRUPTED). */
+    SENT,
+    SUCCEEDED,
+    FAILED,
+
+    /** Cancelled by the user after sending: OpenAI may still have processed and billed it. */
+    CANCELLED,
+
+    /** The app stopped while it was in flight: it may have been processed and billed. */
+    INTERRUPTED,
 }
 
 /** Delivery of the answer to Telegram (a later phase). */
@@ -111,4 +144,35 @@ data class QuestionEntity(
 data class QuestionImageRef(
     val id: String,
     @ColumnInfo(name = "image_path") val imagePath: String,
+)
+
+/**
+ * One request sent to the AI: the local record of usage. Kept when the question is deleted (no
+ * foreign key), so the token history stays complete. Never holds the key, the prompt or the image.
+ */
+@Entity(
+    tableName = "ai_requests",
+    indices = [Index(value = ["question_id"]), Index(value = ["started_at"])],
+)
+data class AiRequestEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @ColumnInfo(name = "question_id") val questionId: String,
+    val model: String,
+    val mode: AnalysisMode,
+    @ColumnInfo(name = "started_at") val startedAt: Long,
+    @ColumnInfo(name = "finished_at") val finishedAt: Long? = null,
+    val outcome: AiRequestOutcome = AiRequestOutcome.SENT,
+    /** `AiError` name when it failed. */
+    @ColumnInfo(name = "error_code") val errorCode: String? = null,
+    @ColumnInfo(name = "http_status") val httpStatus: Int? = null,
+    /** OpenAI's response id (`resp_…`), to match the usage dashboard. */
+    @ColumnInfo(name = "response_id") val responseId: String? = null,
+    @ColumnInfo(name = "input_tokens") val inputTokens: Int? = null,
+    @ColumnInfo(name = "cached_tokens") val cachedTokens: Int? = null,
+    @ColumnInfo(name = "output_tokens") val outputTokens: Int? = null,
+    @ColumnInfo(name = "reasoning_tokens") val reasoningTokens: Int? = null,
+    /** Input tokens written to the prompt cache (billed above the plain input rate). */
+    @ColumnInfo(name = "cache_write_tokens") val cacheWriteTokens: Int? = null,
+    /** The `service_tier` OpenAI says served the request (`default`, `flex`, `priority`…): sets the price. */
+    @ColumnInfo(name = "service_tier") val serviceTier: String? = null,
 )

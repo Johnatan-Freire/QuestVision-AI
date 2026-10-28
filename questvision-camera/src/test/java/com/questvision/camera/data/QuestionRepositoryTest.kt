@@ -40,7 +40,9 @@ class QuestionRepositoryTest {
     private val captures by lazy { CaptureRepository(File(folder.root, "captures"), dispatcher) }
     private val repository by lazy { newRepository() }
 
-    private fun newRepository() = QuestionRepository(dao, DirectTransactions, captures, dispatcher) { 9_999L }
+    private val requests = FakeAiRequestDao()
+
+    private fun newRepository() = QuestionRepository(dao, requests, DirectTransactions, captures, dispatcher) { 9_999L }
 
     /** A photo CameraX would have written at [timeMs]; manual when [sequence] is null. */
     private fun photo(
@@ -214,9 +216,16 @@ class QuestionRepositoryTest {
         }
 
     @Test
-    fun prune_keepsPhotosTheAiHasNotSeen_andRemovesRowsOfDeletedPhotos() =
+    fun prune_keepsEveryPhotoTheAiIsInvolvedWith_andRemovesRowsOfDeletedPhotos() =
         runTest(dispatcher) {
             val pending = recordAuto(photo(sequence = 1, timeMs = 10_000L), question = 1, sequence = 1)
+            // Answered ones too: the cleanup would also delete the row, and with it a paid answer.
+            val analyzed =
+                listOf(AiStatus.ANSWERED, AiStatus.NEEDS_REVIEW, AiStatus.FAILED).mapIndexed { i, status ->
+                    recordAuto(photo(sequence = 2 + i, timeMs = 11_000L + i), question = 1 + i, sequence = 2 + i).also {
+                        dao.saveAiResult(it.id, status, "{\"answer\":[\"C\"]}", "gpt-6-luna", 12_000L)
+                    }
+                }
             val others =
                 (1..MAX_RECENT_CAPTURES + 3).map { i ->
                     photo(sequence = null, timeMs = 100_000L + i * 1_000L).also { recordManual(it) }
@@ -225,11 +234,29 @@ class QuestionRepositoryTest {
             val removed = repository.prune()
 
             assertEquals(3, removed)
-            // The oldest photo is pending for the AI: protected.
-            assertTrue(captures.resolve(pending.imagePath).exists())
+            // The oldest photos are pending for or analyzed by the AI: protected.
+            assertTrue((analyzed + pending).all { captures.resolve(it.imagePath).exists() })
+            assertTrue(analyzed.all { dao.question(it.id)!!.aiResponse == "{\"answer\":[\"C\"]}" })
             assertTrue(others.take(3).none { it.exists() })
-            assertEquals(MAX_RECENT_CAPTURES + 1, dao.questions.size)
+            assertEquals(MAX_RECENT_CAPTURES + 4, dao.questions.size)
             assertTrue(dao.questions.all { captures.resolve(it.imagePath).exists() })
+        }
+
+    @Test
+    fun discarding_isRefusedWhileTheAiIsProcessing() =
+        runTest(dispatcher) {
+            val file = photo(sequence = 1, timeMs = 10_000L)
+            val stored = recordAuto(file, question = 1, sequence = 1)
+            dao.claimForAi(stored.id, 11_000L)
+
+            assertFalse(repository.delete(file))
+            assertTrue(file.exists())
+            assertEquals(AiStatus.PROCESSING, dao.question(stored.id)!!.aiStatus)
+
+            dao.saveAiResult(stored.id, AiStatus.ANSWERED, "{}", "gpt-6-luna", 12_000L)
+            assertTrue(repository.delete(file))
+            assertFalse(file.exists())
+            assertNull(dao.question(stored.id))
         }
 
     @Test

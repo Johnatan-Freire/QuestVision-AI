@@ -99,6 +99,29 @@ fun AiSettingsPanel(
                     color = Color.White,
                 )
             }
+
+            SettingsHeader(text = stringResource(R.string.questvision_settings_limits))
+            SettingsDropdown(
+                label = stringResource(R.string.questvision_settings_requests_per_day),
+                options = AiSettings.requestsPerDayOptions,
+                selected = state.settings.requestsPerDay,
+                onSelected = viewModel::selectRequestsPerDay,
+                optionLabel = { it.toString() },
+            )
+            SettingsDropdown(
+                label = stringResource(R.string.questvision_settings_max_output_tokens),
+                options = AiSettings.maxOutputTokensOptions,
+                selected = state.settings.maxOutputTokens,
+                onSelected = viewModel::selectMaxOutputTokens,
+                optionLabel = { it.toString() },
+            )
+            SettingsDropdown(
+                label = stringResource(R.string.questvision_settings_image_max_dimension),
+                options = AiSettings.imageMaxDimensionOptions,
+                selected = state.settings.imageMaxDimension,
+                onSelected = viewModel::selectImageMaxDimension,
+                optionLabel = { it.toString() },
+            )
             Notice(text = stringResource(R.string.questvision_settings_not_sending_yet))
         }
     }

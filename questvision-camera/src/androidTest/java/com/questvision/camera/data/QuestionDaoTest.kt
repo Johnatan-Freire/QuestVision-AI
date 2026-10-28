@@ -24,6 +24,9 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.questvision.camera.CaptureOrigin
 import com.questvision.camera.CaptureRepository
 import com.questvision.camera.MAX_RECENT_CAPTURES
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -199,6 +202,7 @@ class QuestionDaoTest {
             fun repository() =
                 QuestionRepository(
                     dao,
+                    database.aiRequestDao(),
                     object : TransactionRunner {
                         override suspend fun <T> inTransaction(block: suspend () -> T): T = database.withTransaction { block() }
                     },
@@ -223,5 +227,106 @@ class QuestionDaoTest {
             assertEquals(ReconcileReport(), reopened.reconcile())
             assertEquals(MAX_RECENT_CAPTURES + 1, reopened.history().size)
             assertTrue(reopened.history().all { it.file.exists() })
+        }
+
+    @Test
+    fun aiClaim_isAtomic_andRestartRecoveryFailsInFlightWork() =
+        runBlocking {
+            dao.insertSession(CaptureSessionEntity("s1", 1L))
+            dao.insertQuestion(question("a.jpg", 10L))
+            val requests = database.aiRequestDao()
+
+            assertEquals(1, dao.claimForAi("id-a.jpg", 20L))
+            assertEquals(0, dao.claimForAi("id-a.jpg", 21L))
+            val requestId =
+                requests.insert(
+                    AiRequestEntity(questionId = "id-a.jpg", model = "gpt-6-luna", mode = AnalysisMode.TEXT, startedAt = 20L),
+                )
+            assertEquals(AiStatus.PROCESSING, dao.question("id-a.jpg")!!.aiStatus)
+            assertEquals(1, dao.question("id-a.jpg")!!.attempts)
+
+            // Process death, then the next start.
+            database.close()
+            database = open()
+            assertEquals(1, dao.failAllProcessing("INTERRUPTED", 30L))
+            assertEquals(1, database.aiRequestDao().interruptAllSent(30L))
+
+            val row = dao.question("id-a.jpg")!!
+            assertEquals(AiStatus.FAILED, row.aiStatus)
+            assertEquals("INTERRUPTED", row.lastError)
+            assertEquals(AiRequestOutcome.INTERRUPTED, database.aiRequestDao().request(requestId)!!.outcome)
+            // A FAILED question can be claimed again on request.
+            assertEquals(1, dao.claimForAi("id-a.jpg", 40L))
+            assertEquals(2, dao.question("id-a.jpg")!!.attempts)
+        }
+
+    @Test
+    fun aiResult_andUsage_arePersisted_andTheLogOutlivesTheQuestion() =
+        runBlocking {
+            dao.insertSession(CaptureSessionEntity("s1", 1L))
+            dao.insertQuestion(question("a.jpg", 10L))
+            val requests = database.aiRequestDao()
+            dao.claimForAi("id-a.jpg", 20L)
+            val requestId =
+                requests.insert(
+                    AiRequestEntity(questionId = "id-a.jpg", model = "gpt-6-luna", mode = AnalysisMode.IMAGE, startedAt = 20L),
+                )
+
+            database.withTransaction {
+                dao.saveAiResult("id-a.jpg", AiStatus.ANSWERED, "{\"answer\":[\"B\"]}", "gpt-6-luna", 25L)
+                requests.finish(requestId, AiRequestOutcome.SUCCEEDED, 25L, null, 200, "resp_1", 3_400, 0, 120, 60, 0, "default")
+            }
+            dao.deleteQuestion("id-a.jpg")
+
+            val log = requests.requestsFor("id-a.jpg").single()
+            assertEquals(AiRequestOutcome.SUCCEEDED, log.outcome)
+            assertEquals(AnalysisMode.IMAGE, log.mode)
+            assertEquals(3_400, log.inputTokens)
+            assertEquals(120, log.outputTokens)
+            assertEquals("resp_1", log.responseId)
+            assertEquals("default", log.serviceTier)
+            assertEquals(0, log.cacheWriteTokens)
+            // Deleting the question frees nothing in the request limit.
+            assertEquals(1, requests.countSince(0L))
+        }
+
+    /** The limit, the claim and the log entry in one SQLite transaction, even across two repositories. */
+    @Test
+    fun beginAiRequest_isAtomic_overRealSqlite() =
+        runBlocking {
+            val captures = CaptureRepository(File(workDir, "captures"))
+
+            fun repository() =
+                QuestionRepository(
+                    dao,
+                    database.aiRequestDao(),
+                    object : TransactionRunner {
+                        override suspend fun <T> inTransaction(block: suspend () -> T): T = database.withTransaction { block() }
+                    },
+                    captures,
+                )
+            // Each repository does its start-up recovery first, as the app's single instance does. It
+            // runs before the rows exist: reconcile() also drops rows whose photo is missing.
+            val racers = listOf(repository(), repository()).onEach { it.reconcile() }
+            dao.insertSession(CaptureSessionEntity("s1", 1L))
+            dao.insertQuestion(question("a.jpg", 10L))
+            dao.insertQuestion(question("b.jpg", 11L))
+
+            // Two repositories (two mutexes) racing for the same question: SQLite lets one through.
+            val starts =
+                racers
+                    .map { async(Dispatchers.IO) { it.beginAiRequest("id-a.jpg", "gpt-6-luna", AnalysisMode.TEXT, maxRequests = 10) } }
+                    .awaitAll()
+            assertEquals(1, starts.count { it is AiRequestStart.Started })
+            assertEquals(1, starts.count { it == AiRequestStart.AlreadyProcessing })
+            assertEquals(1, database.aiRequestDao().countSince(0L))
+
+            // Limit of 1 already used: nothing is claimed nor logged.
+            assertEquals(
+                AiRequestStart.LimitReached,
+                racers.first().beginAiRequest("id-b.jpg", "gpt-6-luna", AnalysisMode.TEXT, maxRequests = 1),
+            )
+            assertEquals(AiStatus.PENDING, dao.question("id-b.jpg")!!.aiStatus)
+            assertEquals(1, database.aiRequestDao().countSince(0L))
         }
 }

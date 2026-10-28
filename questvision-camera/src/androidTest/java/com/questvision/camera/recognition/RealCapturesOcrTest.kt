@@ -31,7 +31,8 @@ private const val TAG = "QuestVisionOcrReal"
  * Runs the real ML Kit recognizer and the session's text comparison over real captures, in order,
  * on a device. Not part of the regular suite: it only runs when photos were copied to the test
  * app's `files/real_captures` (see docs/PROJECT_STATUS.md), and reports instead of asserting, so
- * thresholds can be checked against field data.
+ * thresholds can be checked against field data. The logcat gets only metrics; the recognized words go
+ * only to the report in the test app's private files, read with `run-as` and deleted after use.
  */
 @RunWith(AndroidJUnit4::class)
 class RealCapturesOcrTest {
@@ -73,7 +74,6 @@ class RealCapturesOcrTest {
                         "  lines: " +
                         text.lines.joinToString(" | ") { line -> line.joinToString(" ") { it.value + if (it.confident) "" else "?" } }
                 Log.i(TAG, line)
-                Log.i(TAG, detail)
                 report.appendLine(line).appendLine(detail)
             }
             File(context.filesDir, "real_captures_report.txt").writeText(report.toString())

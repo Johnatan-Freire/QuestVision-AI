@@ -97,8 +97,15 @@ class AiSettingsViewModel
 
         fun selectAdvancedModel(model: AiModel) = updateSettings { it.copy(advancedModel = model) }
 
+        fun selectRequestsPerDay(limit: Int) = updateSettings { it.copy(requestsPerDay = limit) }
+
+        fun selectMaxOutputTokens(tokens: Int) = updateSettings { it.copy(maxOutputTokens = tokens) }
+
+        fun selectImageMaxDimension(pixels: Int) = updateSettings { it.copy(imageMaxDimension = pixels) }
+
         private fun updateSettings(transform: (AiSettings) -> AiSettings) {
-            val updated = transform(_uiState.value.settings)
+            // From the store, not the cached copy: the analysis panel also writes settings (first-call confirmation).
+            val updated = transform(settingsStore.load())
             settingsStore.save(updated)
             _uiState.update { it.copy(settings = updated) }
         }
@@ -112,4 +119,7 @@ internal abstract class AiSettingsModule {
 
     @Binds
     abstract fun bindAiSettingsStore(store: SharedPreferencesAiSettingsStore): AiSettingsStore
+
+    @Binds
+    abstract fun bindApiKeySource(repository: OpenAiKeyRepository): ApiKeySource
 }

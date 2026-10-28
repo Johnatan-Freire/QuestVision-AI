@@ -97,6 +97,40 @@ interface QuestionDao {
         answeredAt: Long,
     ): Int
 
+    /**
+     * Marks the question PROCESSING and counts the attempt, unless it already is: a single statement,
+     * so two callers can never both claim it. Returns 1 when claimed.
+     */
+    @Query(
+        "UPDATE questions SET ai_status = 'PROCESSING', attempts = attempts + 1, last_error = NULL, " +
+            "updated_at = :updatedAt WHERE id = :id AND ai_status != 'PROCESSING'",
+    )
+    suspend fun claimForAi(
+        id: String,
+        updatedAt: Long,
+    ): Int
+
+    /** Ends a claimed attempt with an error; the answer of an earlier attempt, if any, is kept. */
+    @Query(
+        "UPDATE questions SET ai_status = 'FAILED', last_error = :error, updated_at = :updatedAt " +
+            "WHERE id = :id AND ai_status = 'PROCESSING'",
+    )
+    suspend fun failAi(
+        id: String,
+        error: String,
+        updatedAt: Long,
+    ): Int
+
+    /** After a restart nothing is in flight anymore: every PROCESSING row becomes FAILED. */
+    @Query(
+        "UPDATE questions SET ai_status = 'FAILED', last_error = :error, updated_at = :updatedAt " +
+            "WHERE ai_status = 'PROCESSING'",
+    )
+    suspend fun failAllProcessing(
+        error: String,
+        updatedAt: Long,
+    ): Int
+
     @Query("UPDATE questions SET telegram_status = :status, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateTelegramStatus(
         id: String,

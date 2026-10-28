@@ -57,6 +57,10 @@ Na prévia: **Manter** move o arquivo para `kept/`; **Descartar** apaga; **Volta
 voltar do sistema) apenas fecha, deixando a captura no conjunto recente sujeito à retenção. A captura
 recém-feita é sempre a mais nova, portanto a retenção nunca a remove.
 
+**Questões da IA (desde 2026-10-28):** toda captura cujo status de IA não é `NOT_REQUESTED`
+(pendente, em processamento, com falha, respondida ou para revisão) fica fora da retenção, com a
+foto e a linha. Só "Descartar" a remove.
+
 **Capturas automáticas e retenção:** elas entram em `captures/` como as manuais, sem confirmação.
 Uma captura automática **é apagada** quando passa a haver **20 capturas mais novas não mantidas**,
 manuais ou automáticas. A remoção acontece na próxima captura salva ou ao abrir o app. Numa sessão
@@ -814,7 +818,8 @@ Os índices cobrem `image_path` (único), `session_id`, `captured_at`, `dedup_ke
 - **Descartar:** apaga o arquivo e depois a linha.
 - **Retenção:** as 20 recentes, como antes, mas fotos `PENDING`/`PROCESSING` são **protegidas**
   até a IA vê-las, assim como as fotos **sem linha no banco** (gravação falha), até o próximo
-  reconcile importá-las. As linhas das fotos apagadas são removidas junto.
+  reconcile importá-las. *(Desde 2026-10-28, toda questão com status diferente de
+  `NOT_REQUESTED`, inclusive respondida, é protegida: ver seção 3k, "Primeira chamada real".)* As linhas das fotos apagadas são removidas junto.
 - **Ao abrir o app, `reconcile()`:**
   - importa arquivos sem linha como `NOT_REQUESTED` (nunca enviados sozinhos);
   - reaponta linhas cujo arquivo foi movido (`kept/`);
@@ -1038,6 +1043,496 @@ A Fase 3.3 só começa com nova autorização.
 A fila da IA é `questionsWithAiStatus(PENDING)`, em ordem de captura. Os resultados vão por
 `updateAiStatus` (tentativas e erro) e `saveAiResult` (resposta, modelo, data), e o status do
 Telegram por `updateTelegramStatus`.
+
+## 3k. Fase 3.3: integração manual com a API da OpenAI (2026-10-27, revisada em 2026-10-28, aguardando revisão)
+
+Sem commit nem push. **Nenhuma chamada real à OpenAI foi feita e nenhum crédito foi consumido**: toda
+a validação usou um cliente falso e um servidor HTTP local. O envio é **só manual** (botão), sem fila
+automática, e nada é enviado ao abrir o app. A captura automática e o OCR das Fases 2 e 2.5 não
+foram alterados. O Telegram não faz parte desta fase.
+
+### Arquitetura (pacote `com.questvision.camera.ai`)
+
+| Arquivo | Responsabilidade |
+| --- | --- |
+| `HttpTransport.kt` | `UrlConnectionTransport`: POST com `HttpURLConnection` da plataforma (nenhuma biblioteca de rede nova), timeouts de conexão e leitura, corpo limitado a 2 MB, cancelamento imediato. `setFixedLengthStreamingMode` impede que a pilha HTTP do Android reenvie o corpo sozinha; redirecionamentos desligados. Não registra nada em log |
+| `OpenAiClient.kt` | Responses API (`POST https://api.openai.com/v1/responses`) com Structured Outputs. Uma requisição por chamada, **nunca repete**. Mapeia HTTP, `status`, recusa, `usage` e `service_tier` |
+| `AiPrompt.kt` | Instruções em português (questões objetivas de concursos, informática, programação, matemática e conhecimentos gerais), proteção contra instruções escritas na tela e esquema JSON estrito |
+| `AiAnswer.kt` | Valida a resposta e força `needs_review` quando a resposta é incoerente, "nenhuma correta", "indeterminada" ou de confiança baixa. JSON canônico guardado no Room |
+| `ExtractedQuestion.kt` | Modo texto: recorta do OCR **só a última questão da tela** (título "Questão N", enunciado e ≥ 2 alternativas). Se ela estiver incompleta, não envia nada; nunca troca por uma questão anterior |
+| `QuestionImageEncoder.kt` | Modo imagem: foto na orientação correta (EXIF), reduzida ao lado máximo configurado, JPEG 85, enviada como data URL. O arquivo original não é alterado |
+| `QuestionAnalyzer.kt` | Orquestra: guarda em memória, início atômico (limite + *claim* + registro) no SQLite, uso da chave só durante a chamada, persistência do resultado ou da falha, cancelamento |
+| `CostEstimate.kt` | Estimativa **antes** do envio (aproximada) e custo **observado** depois (tokens informados × preço publicado da modalidade que atendeu) |
+| `AiAnalysisViewModel.kt` / `AiAnalysisPanel.kt` | Painel "Análise por IA" (botão ✨ na revisão da foto): modelo, modo Texto/Imagem, Analisar / Analisar novamente, progresso e Cancelar, resposta, explicação, aviso de revisão, confirmações, tokens, custo observado e envios das últimas 24 h |
+| `AiError.kt` | Códigos de erro persistidos (com a marca de "resultado desconhecido") e motivos de recusa local |
+
+Fluxo: revisão da foto → ✨ → painel (não envia nada) → **Analisar** → confirmação única da primeira
+chamada real (modelo, modo, estimativa) e, se o último envio desta questão terminou sem resposta,
+confirmação de que reenviar é uma nova cobrança → requisição → resposta salva e exibida.
+
+### Revisão da API (documentação oficial, consultada em 2026-10-28)
+
+Fontes: páginas do modelo `gpt-6-luna`, Pricing, Images and vision, Flex processing, Error codes e a
+referência de `POST /v1/responses` em developers.openai.com.
+
+- **`gpt-6-luna`:** disponível na API, *snapshot* único `gpt-6-luna`.
+  - Endpoints: inclui Responses (`v1/responses`).
+  - Modalidades: texto na entrada e saída; imagem só na entrada.
+  - Structured Outputs: suportado. `reasoning.effort`: `none`, `low`, `medium` (padrão), `high`,
+    `xhigh`, `max`; o app usa `low`.
+  - Janela de 1.050.000 tokens; saída máxima 128.000.
+  - **Não está disponível no nível gratuito** (*Free: Not supported*): a conta precisa estar em
+    nível pago.
+- **Preços por 1M de tokens** (entrada / entrada em cache / saída):
+  - Standard US$ 0,10 / 0,01 / 0,50;
+  - Flex e Batch US$ 0,05 / 0,005 / 0,25 (50%);
+  - Fast (relatado como `priority`) US$ 0,20 / 0,02 / 1,00 (2×);
+  - escrita em cache: 1,25× a entrada (US$ 0,125 na janela de 30 min);
+  - prompts acima de 272 mil tokens custam mais (não se aplica aqui);
+  - processamento regional: +10%.
+- **Corpo da requisição:** `instructions`, `input` com `input_text` / `input_image` (`image_url`
+  como data URL base64, `detail`), `text.format` `{type: "json_schema", name, strict: true,
+  schema}`, `reasoning.effort`, `max_output_tokens` (inclui os tokens de raciocínio), `store` e
+  `service_tier`.
+- **Resposta:** `status` (`completed`, `failed`, `in_progress`, `cancelled`, `queued`,
+  `incomplete`), `incomplete_details.reason` (`max_output_tokens`, `content_filter`, …), itens
+  `message` com `output_text` ou `refusal`, `service_tier` efetivo e `usage`:
+  - `input_tokens`, com `input_tokens_details.cached_tokens` e `cache_write_tokens`;
+  - `output_tokens`, com `output_tokens_details.reasoning_tokens`;
+  - `total_tokens`.
+- **Erros:** 401 chave; 403 região ou permissão; 429 de ritmo; 429 de cobrança com `error.code`
+  `credit_balance_exhausted`, `project_spend_limit_exceeded`, `organization_spend_limit_exceeded`,
+  `organization_usage_limit_exceeded` (tipo ainda pode ser `insufficient_quota`). A documentação
+  diz que repetir erros de cobrança não restaura o acesso. No Flex, 429 *Resource Unavailable* não é
+  cobrado.
+- **Imagens:** o guia de visão **não menciona o `gpt-6-luna`** (só `gpt-5.6-luna` e outros). Não
+  existe contagem oficial de tokens de imagem para este modelo.
+
+#### Divergências encontradas e corrigidas
+
+1. **`service_tier` omitido.** Sem o campo, o padrão é `auto`, que segue a configuração do projeto
+   e pode cair numa modalidade mais cara (Fast, 2×). Agora o app envia sempre `"default"` (ou
+   `"flex"`, se ligado) e registra a modalidade informada na resposta.
+2. **Multiplicador 1,2 para imagens removido.** Era uma suposição. A estimativa do modo imagem agora
+   **não inclui** os tokens da foto e diz isso na tela; o valor real aparece no custo observado do
+   primeiro envio com imagem.
+3. **`cache_write_tokens`** (novo campo de `usage`, cobrado a 1,25× a entrada) passou a ser lido,
+   persistido e incluído no custo observado.
+4. **Timeout do Flex:** 300 s → 900 s, como recomenda o guia do Flex. Diminui o risco de desistir
+   de uma requisição que seria respondida (e cobrada).
+
+### Custo: estimado × observado
+
+- **Estimado (antes do envio, aproximado, não é teto):**
+  - entrada de texto: instruções + esquema + questão a ~3 caracteres por token, sem cache;
+  - saída: `max_output_tokens` × preço de saída, o máximo cobrável de saída;
+  - modo imagem: **sem** os tokens da foto (não documentados para o modelo).
+  - Valores típicos com `gpt-6-luna` Standard e saída máxima de 1.500 tokens: ≈ US$ 0,0008 por
+    envio em texto (≈ US$ 0,00075 é o teto da saída). Em imagem, ≈ US$ 0,0008 **mais** a foto.
+- **Observado (depois do envio):** tokens informados pela API × preços publicados da modalidade
+  que atendeu (`default`, `flex` ou `priority`). Se faltar contagem ou a modalidade for
+  desconhecida, o app mostra "indisponível" em vez de inventar um valor. **O painel de uso da
+  OpenAI é a referência**; o valor do app é um cálculo.
+
+### Persistência no Room (versão 2)
+
+- **Estados** (reaproveitados da Fase 3.2): `PENDING`/`NOT_REQUESTED`/`FAILED`/`ANSWERED`/
+  `NEEDS_REVIEW` → `PROCESSING` → `ANSWERED` (equivale ao `COMPLETED` pedido) ou `NEEDS_REVIEW`; em
+  erro, `PROCESSING` → `FAILED`. Só se entra em `PROCESSING` pelo *claim* atômico, e só se sai dele
+  por resposta, falha, cancelamento ou recuperação após reinício. Criar um `COMPLETED` duplicaria
+  `ANSWERED`, que já existia no esquema.
+- **`questions`** (sem mudança de colunas):
+  - `ai_response`: JSON validado (resposta, explicação, confiança, revisão, modo);
+  - `ai_model`, `ai_answered_at`;
+  - `attempts`: somado a cada tentativa;
+  - `last_error`: código, nunca mensagem nem payload.
+- **Respostas e falhas:**
+  - uma falha **mantém a resposta anterior**, a foto e o OCR;
+  - `FAILED` passou a **proteger a foto da retenção**, assim como `PENDING` e `PROCESSING`.
+- **Nova tabela `ai_requests`:** registro local de uso.
+  - Campos: questão, modelo, modo, início e fim, resultado (`SENT`, `SUCCEEDED`, `FAILED`,
+    `CANCELLED`, `INTERRUPTED`), código de erro, HTTP, `response_id`, tokens (entrada, cache,
+    escrita em cache, saída, raciocínio) e `service_tier`.
+  - Não tem chave estrangeira, para o histórico de consumo sobreviver à exclusão da questão.
+  - Nunca guarda chave, prompt ou imagem.
+- **Migração 1 → 2:** `AutoMigration` aditiva (só cria a tabela), sem migração destrutiva.
+  - O esquema `schemas/…/2.json` foi exportado; as tabelas da versão 1 ficaram idênticas
+    (verificado por comparação dos JSON).
+  - As duas colunas novas (`cache_write_tokens`, `service_tier`) entraram na própria versão 2,
+    porque a versão 2 nunca foi instalada em aparelho nem versionada.
+  - `QuestVisionMigrationTest` cria um banco v1 com dados, migra e valida.
+- **Concorrência:**
+  - guarda em memória no `QuestionAnalyzer`;
+  - `beginAiRequest`: numa única transação, conta as requisições das últimas 24 h, faz o
+    `UPDATE … WHERE ai_status != 'PROCESSING'` e registra o envio como `SENT`;
+  - o painel analisa uma questão por vez.
+
+### Interrupções e resultado desconhecido
+
+- Se a requisição saiu e o app fechou antes da resposta, **não se sabe se a OpenAI a processou**.
+  A falta de resposta não é tratada como prova de que nada foi processado ou cobrado.
+- **Recuperação:** uma vez por processo, antes de qualquer *claim*, o que ficou em voo de um
+  processo anterior vira `INTERRUPTED` (`SENT` → `INTERRUPTED`; `PROCESSING` → `FAILED`), **sem
+  reenviar**.
+  - Antes, isso rodava a cada `reconcile()`, ou seja, a cada criação do ViewModel da câmera. Se o
+    ViewModel fosse recriado com um envio em curso no mesmo processo, esse envio seria marcado como
+    interrompido por engano e a questão poderia ser reivindicada de novo. Corrigido e coberto por
+    teste.
+- **Erros de resultado desconhecido:** `NETWORK`, `TIMEOUT`, `CANCELLED`, `INTERRUPTED` e
+  `UNEXPECTED`. As mensagens dizem que a requisição pode ter sido processada e cobrada (a de rede
+  dizia "nada foi perdido", o que sugeria que nada chegou à OpenAI; corrigida).
+- **Reenvio:** para uma questão nesse estado, **Analisar novamente pede confirmação explícita** de
+  que é uma nova requisição, cobrada à parte. Falhas que a própria OpenAI informou (401, 429, 400…)
+  não pedem.
+- Fotos, OCR e resposta anterior são preservados em todos os casos.
+
+### Segurança
+
+- **Chave:**
+  - vem do `OpenAiKeyRepository` (Fase 3.1) pela interface `ApiKeySource`, cifrada com o Android
+    Keystore;
+  - fica decifrada só durante a chamada e vai só no cabeçalho `Authorization`, nunca no corpo,
+    em log ou no banco (coberto por testes).
+- **Logs:**
+  - o log `QuestVisionAi` registra só modo, modelo, modalidade, resultado, HTTP e contagens de
+    tokens;
+  - `AiInput` e `EncodedImage` não imprimem conteúdo;
+  - nenhum log da integração tem chave, enunciado ou imagem.
+  - **Log de diagnóstico do OCR corrigido (autorizado em 2026-10-28):** registrava as 12 primeiras
+    palavras do texto reconhecido. Veja "Validação final" abaixo.
+- **Rede:**
+  - só HTTPS para `api.openai.com`;
+  - o manifest do módulo declara `INTERNET`;
+  - o tráfego sem TLS (cleartext) continua bloqueado (padrão do targetSdk 37);
+  - sem telemetria, analytics ou serviço intermediário.
+- **Risco residual:** uma chave usada diretamente num app móvel pode ser extraída (depuração,
+  root, memória do processo), mesmo com o Keystore. A arquitetura é aceita por ser de uso pessoal,
+  **com limite rígido de gastos no projeto da OpenAI**.
+
+### Controle financeiro (local, não é teto de gastos)
+
+- **Limite de requisições por 24 horas:** 5, 10 (padrão), 20 ou 50, nas Configurações.
+  - Antes era por sessão, em memória, e zerava ao reabrir o app. Agora é contado em `ai_requests`
+    (janela móvel de 24 h): **reiniciar o app não zera**, apagar fotos ou questões não libera, e
+    envios com falha ou cancelados também contam.
+  - Limitação: apagar os dados do app zera o registro.
+- **Saída máxima:** 800, 1.500 (padrão) ou 3.000 tokens.
+- **Imagem:** 1.280, 1.600 ou 2.048 px (padrão).
+- **Confirmações:** primeira chamada real (uma vez, com modelo, modo e estimativa); reenvio após
+  resultado desconhecido (sempre).
+- **Antes de cada envio:** o painel mostra o modelo, os envios das últimas 24 h e a estimativa
+  (com o aviso de que exclui a foto no modo imagem).
+- **Sem repetição automática**, em nenhum erro:
+  - 429 por ritmo (`RATE_LIMIT`) vira mensagem;
+  - 429 de créditos ou limite (`QUOTA`) vira outra mensagem, que manda verificar o faturamento;
+  - nenhum envio automático na abertura do app ou após reinício.
+- **Tokens:** registrados em `ai_requests` quando a API informa, inclusive em respostas
+  inutilizáveis.
+- **O teto real tem de ser configurado na plataforma da OpenAI:**
+  - limite mensal rígido no projeto;
+  - créditos pré-pagos sem recarga automática;
+  - alertas de uso.
+
+### Testes
+
+- **JVM: 178/178** na revisão (180/180 na validação final, abaixo), com cliente OpenAI falso e servidor HTTP local, sem internet. Execução final
+  com `--rerun-tasks` em 2026-10-28:
+  - **`QuestionAnalyzerTest` (16):**
+    - texto e imagem bem-sucedidos e persistência completa, inclusive modalidade e escrita em cache;
+    - resposta para revisão;
+    - resposta inválida ou incompleta;
+    - sem chave;
+    - 401, 429 (ritmo e cota), rede, timeout e 5xx, uma única chamada e dados preservados;
+    - resposta anterior mantida após falha e foto `FAILED` protegida da retenção;
+    - cancelamento;
+    - reinício durante o processamento;
+    - novo `reconcile()` no mesmo processo não interrompe o envio em curso;
+    - o primeiro *claim* após reinício fecha antes as tentativas interrompidas, sem reenviar;
+    - chamadas duplicadas (mesma instância e outra instância);
+    - limite de 24 h: conta falhas e sobrevive a reinício; janela móvel; apagar questões não libera;
+    - OCR insuficiente e foto ilegível;
+    - chave nunca armazenada.
+  - **`OpenAiClientTest` (7):** formato da requisição (Structured Outputs estrito, `store: false`,
+    `service_tier` sempre explícito, chave só no cabeçalho), imagem como data URL, Flex, mapeamento
+    HTTP, respostas inutilizáveis com uso cobrado, rede e timeout.
+  - **`CostEstimateTest` (3):** custo observado por modalidade e com escrita em cache; nunca
+    inventado (modalidade ou contagem ausentes); estimativa limita a saída e sinaliza a exclusão da
+    imagem.
+  - **`UrlConnectionTransportTest` (6):** sucesso, corpo de erro e `Retry-After`, timeout, porta
+    fechada e cancelamento imediato (inclusive antes de conectar, 20 tentativas).
+  - **`AiAnswerTest` (7)** e **`ExtractedQuestionTest` (4).**
+  - **`AiAnalysisViewModelTest` (6):** nada é enviado ao iniciar o app nem ao abrir o painel;
+    confirmação da primeira chamada; custo observado; texto como padrão; cancelamento pelo painel;
+    confirmação de reenvio após resultado desconhecido (e não após falha conhecida); foto sem
+    registro.
+- **Defeito encontrado e corrigido na implementação:** o cancelamento não interrompia uma leitura
+  HTTP bloqueada (esperava o timeout de 30 s). Agora a E/S bloqueante roda separada do chamador: ao
+  cancelar, o socket é fechado e o chamador retorna em menos de 0,5 s.
+- **Instrumentados:** compilados (`assembleDebugAndroidTest`), usando bancos de teste próprios
+  (não tocam nos dados do app):
+  - `QuestVisionMigrationTest`: migração 1 → 2 com dados;
+  - `QuestionDaoTest`: +3 testes (*claim* atômico e recuperação após reinício; resultado e uso
+    persistidos com modalidade, registro sobrevivendo à questão; `beginAiRequest` atômico com dois
+    repositórios concorrentes e limite).
+
+  **Não foram executados: o Galaxy M52 não estava conectado** em nenhum momento da revisão. Ficam
+  pendentes, **não aprovados**, assim como as validações manuais no aparelho (abertura após a
+  atualização, histórico e fotos preservados, painel com cliente simulado, painel sem requisição).
+  A espera automática pelo ADB (tarefa `bxfzb69if`) foi encerrada, e o servidor ADB também; nenhum
+  processo ou instalador automático ficou ativo.
+- `spotlessCheck` ✅ · `:questvision-camera:testDebugUnitTest` ✅ · `:app:assembleDebug` ✅ ·
+  `:questvision-camera:assembleDebugAndroidTest` ✅.
+- **APK:** nenhuma string `sk-…`; único endpoint `api.openai.com`; `INTERNET` declarada.
+
+### Limitações e riscos
+
+- **Modo texto:**
+  - só para questões objetivas com título "Questão N" e ≥ 2 alternativas;
+  - uma alternativa final que quebra em duas linhas perde a continuação;
+  - fórmulas e figuras exigem o modo imagem.
+- **Custo de imagem:** desconhecido até o primeiro envio real com imagem (não documentado para o
+  `gpt-6-luna`).
+- **Estimativa de texto:** aproximada (~3 caracteres por token); só a parte da saída é um limite.
+- **Requisição de resultado desconhecido:** rede, timeout, cancelamento, interrupção e erro
+  inesperado podem ter sido cobrados sem resposta. Ficam registrados como tais e só se repetem com
+  confirmação do usuário.
+- **Fotos `FAILED`** agora ficam fora da retenção. Isso aumenta o crescimento de armazenamento,
+  já registrado para a Fase 3.4.
+- **Limite de 24 h:** é um freio local; apagar os dados do app o zera. Não substitui o limite
+  rígido da OpenAI.
+- **Painel:** uma análise por vez. Se o painel for destruído (tela fechada), a análise em curso é
+  cancelada e registrada como `CANCELLED`.
+
+### Validação final (2026-10-28)
+
+#### Correção de privacidade no log do OCR (autorizada)
+
+- **Antes:** `logDecision` (`QuestVisionCameraViewModel`) gravava no logcat, com a tag do OCR,
+  `text="…"` com as 12 primeiras palavras reconhecidas (`TextFingerprint.preview()`).
+- **Agora:** a linha é montada por `ocrDecisionLog(...)` e traz só indicadores técnicos:
+  - arquivo, veredito e tempo do OCR;
+  - número de tokens e de linhas;
+  - métricas de comparação (`words`, `novel`, `ratio`, `run`, `closest`);
+  - `simhash` de 64 bits (identifica o conjunto de palavras sem revelá-lo);
+  - contadores da sessão.
+- `TextFingerprint.preview()` ficou sem uso e foi removido. Os algoritmos de detecção e de OCR não
+  mudaram.
+- **Teste novo:** `OcrDecisionLogTest` (2) confere que nenhuma palavra reconhecida (≥ 3 letras) de
+  duas telas aparece na linha, e que as métricas continuam lá.
+- **APK:** o formato antigo (`text=`) não está mais no dex; o novo está.
+- **Ainda existe, fora do app:** `RealCapturesOcrTest` (teste instrumentado de diagnóstico, só
+  executado manualmente sobre capturas reais) grava texto reconhecido no logcat e num relatório
+  local. Não faz parte do APK do app e não foi executado; ajustá-lo depende de autorização.
+
+#### Galaxy M52 (SM-M526B), 2026-10-28
+
+O aparelho foi conectado e autorizado; tudo foi feito à mão, sem processos de espera, e o servidor
+ADB foi encerrado no fim. Nada destrutivo: nenhuma desinstalação, nenhum `pm clear`, banco de
+produção só lido (cópias via `run-as … cat`).
+
+- **Estado antes:** app instalado em 2026-10-26 (banco Room v1). 33 questões (21 `NOT_REQUESTED`,
+  12 `PENDING`, 12 com OCR), 2 sessões, 33 fotos (2 em `kept/`). **Nenhuma chave salva**
+  (`no_backup/secure` inexistente): uma chamada real era impossível.
+- **Testes instrumentados:** APK de teste instalado com `install -r` e executado com
+  `am instrument`, sem `RealCapturesOcrTest` (diagnóstico que grava texto do OCR) e sem desinstalar
+  nada. Primeira execução: 14/15. `beginAiRequest_isAtomic_overRealSqlite` falhou por **erro do
+  teste**: `reconcile()` também remove linhas cuja foto não existe, e o teste inseria as questões
+  antes. Corrigido (a recuperação roda antes de inserir; o teste de limite usa o mesmo
+  repositório). Segunda execução: **15/15** ✅, incluindo `version1To2_keepsAllData` e a reserva
+  atômica em SQLite real.
+- **Instalação sobre a anterior (`install -r`) e migração 1 → 2 com dados reais:** ✅
+  - `user_version` = 2 e `identity_hash` igual ao de `schemas/…/2.json`;
+  - `ai_requests` criada com `cache_write_tokens` e `service_tier`, vazia;
+  - `PRAGMA integrity_check` = ok, `foreign_key_check` vazio;
+  - todas as linhas de `questions` e `capture_sessions` idênticas byte a byte às de antes;
+  - MD5 das 33 fotos idêntico.
+- **Histórico:** ✅ "33 fotos" na tela; capturas manuais e automáticas abrem normalmente.
+- **Painel de análise:** ✅ abre e fecha; mostra `gpt-6-luna`, texto (OCR) como padrão, "0 de 10"
+  envios nas 24 h e a estimativa. "Analisar" mostrou a confirmação da primeira chamada real; foi
+  tocado **"Agora não"** (sem "Enviar", para a primeira chamada real manter esse aviso). Nada foi
+  enviado, nenhuma linha em `ai_requests`, nenhuma preferência gravada.
+- **Reinício (force-stop + abertura):** ✅ banco, fotos e contagem iguais; `ai_requests` vazia;
+  reconciliação `imported=0, repointed=0, removed=0, interrupted=0`; nada enviado sozinho.
+- **Logcat do processo do app:** ✅ sem `sk-`, `Bearer`, `Authorization`, `openai` nem texto de
+  questão. `netstats`: nenhum tráfego registrado para o UID do app.
+
+**Não validado no aparelho:**
+
+- **Linha nova do log do OCR:** exigiria iniciar o monitoramento, que cria capturas e pode
+  acionar a limpeza das não mantidas além das 20 mais recentes. Coberta por `OcrDecisionLogTest` e
+  pela inspeção do dex.
+- **Respostas e erros da API e limite de 24 h com envios reais registrados:** sem chave não há
+  envio, e com chave seria chamada real. Cobertos só nos testes JVM (cliente falso) e no teste
+  instrumentado do repositório. Um teste instrumentado com o cliente falso fica como pendência.
+- **Fluxo `NO_KEY` no aparelho:** exigiria tocar em "Enviar" na confirmação.
+
+**Observação:** o banco `com.google.android.datatransport.events` (registro de uso do ML Kit) existe
+desde 2026-10-26. É anterior a esta fase e não houve tráfego do app; avaliar se o ML Kit envia
+telemetria fica para uma revisão à parte.
+
+#### Testes finais (`--rerun-tasks`, 2026-10-28)
+
+- `spotlessCheck` ✅
+- `:questvision-camera:testDebugUnitTest` ✅: **180/180** (2 novos do log do OCR).
+- `:app:assembleDebug` ✅ · `:questvision-camera:assembleDebugAndroidTest` ✅
+- Instrumentados no M52: **15/15** ✅ (após a correção do teste descrita acima).
+- APK: nenhuma string `sk-…`.
+
+### Primeira chamada real (2026-10-28)
+
+Autorizada pelo usuário e feita por ele no M52: chave salva em ⚙ → OpenAI, uma única questão
+(sessão `20261026-143906`, captura 2: "Questão 02 — Sistemas Operacionais", `ps aux`), modo
+**Texto (OCR)**, confirmação de primeira chamada aceita na interface (com a estimativa de cerca de
+US$ 0,0008). Nenhuma chamada foi feita pelo agente.
+
+- **Resultado:** HTTP 200, `SUCCEEDED`, `gpt-6-luna`, `service_tier` = `default`, 3,5 s,
+  `response_id` `resp_01db…`. Resposta **C** (`ps aux`), confiança alta, `needs_review` falso,
+  explicação coerente. Questão `ANSWERED`, `attempts` = 1.
+- **Uso:** 461 tokens de entrada (0 em cache, 0 escritos no cache), 75 de saída (0 de raciocínio).
+  **Custo observado:** (461 × 0,10 + 75 × 0,50) / 10⁶ ≈ **US$ 0,000084**, abaixo da estimativa
+  (que considera o teto de saída). Conferir com o painel de uso da OpenAI.
+- **Contabilização:** uma linha em `ai_requests`; contador de 24 h = 1 de 10.
+- **Segurança:** chave só em `no_backup/secure/openai_api_key.bin` (194 bytes, cifrada; sem `sk-` em
+  texto puro). Logcat do processo do app: uma linha `QuestVisionAi` (modo, modelo, tier, resultado,
+  HTTP, tokens); nenhuma ocorrência de `sk-`, `Bearer`, `Authorization`, enunciado ou resposta. O
+  logcat do aparelho inteiro também não tem `sk-`.
+
+#### Perda de dados encontrada e corrigida
+
+- **O que aconteceu:** na reabertura seguinte, a retenção apagou a **foto e a linha** da questão
+  respondida (33 → 32 questões). O registro em `ai_requests` sobreviveu (sem chave estrangeira).
+- **Causa:** `AiStatus.keepsPhoto` protegia só `PENDING`, `PROCESSING` e `FAILED`. Ao virar
+  `ANSWERED`, a questão (mais antiga que as 20 recentes não mantidas) passou a contar para a
+  retenção, que remove o arquivo e a linha. Defeito da regra da Fase 3.2, exposto pela primeira
+  resposta real.
+- **Irrecuperável:** a foto (armazenamento privado, fora de backup). **Preservados fora do app:** a
+  resposta, o texto do OCR e o registro da chamada, na cópia do banco feita antes do reinício
+  (scratchpad local do agente; não versionada).
+- **Correção:** `keepsPhoto` = tudo exceto `NOT_REQUESTED`. Texto do histórico atualizado ("além das
+  que aguardam ou já passaram pela IA"). Testes:
+  - JVM `prune_keepsEveryPhotoTheAiIsInvolvedWith_andRemovesRowsOfDeletedPhotos`: respondida, para
+    revisão e com falha sobrevivem com a resposta;
+  - instrumentado `anOldAnsweredQuestion_survivesTheCleanup_andARestart`: reproduz o caso real no
+    SQLite do aparelho.
+- **Instalação da correção** (`install -r`) e duas aberturas: 32 questões, 2 sessões e
+  `ai_requests` idênticos; fotos com o mesmo MD5; chave mantida; `integrity_check` ok.
+
+#### Testes no M52 (2026-10-28)
+
+- **Instrumentados: 21/21** ✅ (sem o diagnóstico `RealCapturesOcrTest`):
+  - `QuestionAnalyzerDeviceTest` (6, novo): analisador, `OpenAiClient`, repositório, Room e arquivos
+    reais; só a rede é simulada (`HttpTransport` roteirizado). Cobre resposta salva e mantida após
+    reinício; 9 erros (401, cota, 429, 500, incompleta, JSON inválido, sem rede, conexão
+    interrompida, tempo esgotado), cada um com uma requisição, foto e OCR preservados; limite de 10
+    em 24 h, mantido após reinício e liberado após 24 h; envio em voo ao morrer o processo vira
+    `INTERRUPTED` sem reenvio; questão respondida antiga sobrevive à retenção; logcat do processo
+    sem chave, enunciado ou explicação.
+  - `QuestionDaoTest` (10), `QuestVisionMigrationTest` (1), `AndroidKeystoreSecretCipherTest` (4).
+- **`RealCapturesOcrTest`:** o logcat recebe só métricas; as palavras vão só para o relatório
+  privado do app de teste.
+
+#### Telemetria do ML Kit
+
+- O OCR usa o modelo **embutido** (`com.google.mlkit:text-recognition` 16.0.1): imagem e texto
+  ficam no aparelho.
+- O ML Kit envia **métricas** ao Google (`firebaselogging.googleapis.com`, HTTPS, via
+  `datatransport`/CCT). Fila no M52: 16 eventos `FIREBASE_ML_SDK` de 2026-10-26, nunca enviados
+  (`num_attempts` = 0). Cada um traz pacote do app, versão do SDK, idioma, um UUID por instalação,
+  números (tempo, tamanhos) e metadados do aparelho: país, MCC/MNC, modelo, fingerprint do sistema,
+  fuso horário. Nenhum texto reconhecido nem imagem.
+- O Google **não documenta** forma de desativar. Redução possível, não oficial e **não aplicada**:
+  remover do manifesto o `CctBackendFactory` (`tools:node="remove"`). Requer autorização e teste do
+  OCR no M52.
+
+### Auditoria antes do commit (2026-10-28)
+
+**Exclusões automáticas: todos os caminhos que apagam fotos ou linhas foram revistos.**
+
+| Caminho | Gatilho | Questão analisada pela IA |
+| --- | --- | --- |
+| `prune()` (retenção das 20) | abrir o app; após cada captura | **protegida** (`keepsPhoto` = tudo exceto `NOT_REQUESTED`), foto e linha |
+| `delete()` ("Descartar") | ação do usuário | apagada só por pedido explícito; **recusado em `PROCESSING`** (novo) |
+| `reconcile()` | abrir o app | remove só linhas cuja foto não existe; com a retenção corrigida, a foto de uma questão analisada só some por "Descartar" |
+| monitoramento (duplicada, ilegível, falha) | sessão automática | apaga só a foto recém-capturada, antes de existir linha |
+| sessões | — | nunca apagadas; FK `RESTRICT` |
+| `ai_requests` | — | nunca apagada; sem FK, sobrevive à exclusão da questão |
+
+- **Novo achado, corrigido:** "Descartar" apagava uma questão em análise (`PROCESSING`). A resposta,
+  possivelmente cobrada, chegaria sem linha. Agora `delete()` devolve `false` e não apaga nada nesse
+  estado. Teste JVM `discarding_isRefusedWhileTheAiIsProcessing`.
+- **Corridas:** `prune()`, `delete()`, `reconcile()`, `beginAiRequest()`, `completeAi()` e
+  `failAi()` passam pelo mesmo mutex do repositório (singleton), e a reserva é atômica no SQLite. Não
+  há janela em que uma questão analisada fique sem proteção: `NOT_REQUESTED`/`PENDING` →
+  `PROCESSING` (reserva) → `ANSWERED`/`NEEDS_REVIEW`/`FAILED`, todos protegidos.
+- **Arquivos órfãos:** foto sem linha é protegida da retenção até o `reconcile()` importá-la como
+  `NOT_REQUESTED`.
+- **Migração:** só `AutoMigration(1, 2)`, sem `fallbackToDestructiveMigration`.
+- **Risco residual (não crítico):** se a foto de uma questão analisada sumir por fora do app (falha de
+  armazenamento), `reconcile()` remove a linha e a resposta. O registro em `ai_requests` fica. Manter
+  essas linhas exigiria suporte a "foto ausente" no histórico: proposta para a próxima fase.
+
+**OpenAI (sem novas chamadas):**
+
+- O modelo `gpt-6-luna` é válido e está disponível: a chamada real respondeu HTTP 200 com
+  `status: completed`.
+- `service_tier` sempre explícito (`default`; `flex` só se ativado). A resposta confirmou `default`.
+- Structured Outputs: `json_schema` estrito, e a resposta real foi interpretada pelo esquema (tipo,
+  resposta, confiança, revisão).
+- Campos de uso lidos da resposta real: `input_tokens`, `cached_tokens`, `cache_write_tokens`,
+  `output_tokens`, `reasoning_tokens`.
+- **Custo estimado ≠ observado ≠ cobrado:**
+  - a estimativa antes do envio usa o teto de saída (≈ US$ 0,0008);
+  - o observado aplica a tabela de preços aos tokens informados (≈ US$ 0,000084);
+  - a cobrança oficial é a do painel de uso da OpenAI, e o valor do app não a substitui.
+- O limite de 10 envios em 24 h e a ausência de reenvio após interrupção não mudaram e estão
+  cobertos pelos testes JVM e instrumentados.
+
+**Recuperação da questão perdida:**
+
+- **Foto:** irrecuperável (armazenamento privado do app, sem backup).
+- **Preservado fora do repositório**, em `~/QuestVision-backups/2026-10-28-banco-antes-da-perda/`
+  (somente leitura):
+  - banco antes da perda;
+  - banco v1 anterior à atualização;
+  - MD5 das fotos;
+  - `questao-perdida-exportada.json` com OCR, resposta, modelo e uso.
+- **Já no aparelho:** o registro da chamada (`ai_requests`, `resp_01db…`).
+- **Reinserir a linha no banco do app não funciona hoje:** sem a foto, o próximo `reconcile()` a
+  removeria. As opções exigem autorização:
+  - (a) manter só o JSON exportado;
+  - (b) implementar suporte a questão sem foto e então reinserir a linha.
+- Nada foi alterado no banco do aparelho.
+
+**Telemetria:**
+
+- Não há opção oficial documentada para reduzir ou desativar as métricas do ML Kit.
+- Os termos do ML Kit só exigem informar o usuário.
+- O contorno conhecido (remover `CctBackendFactory` do manifesto) é não oficial e afeta todo SDK que
+  use `datatransport`, por isso não foi aplicado.
+- Medidas documentadas possíveis:
+  - informar o usuário sobre as métricas;
+  - não empacotar os samples (código de barras, rótulos, segmentação) no APK do QuestVision, para
+    que só o reconhecimento de texto inicialize. Na fila havia um evento do SDK 17.3.0
+    (barcode-scanning).
+
+**Testes finais:**
+
+- `spotlessCheck` ✅
+- `:questvision-camera:testDebugUnitTest` ✅ **181/181** (`--rerun-tasks`)
+- `:app:assembleDebug` ✅ · `:questvision-camera:assembleDebugAndroidTest` ✅
+- **M52 (instrumentados): 21/21** ✅
+- **M52, atualização final (`install -r`, duas aberturas):** questões, sessões e `ai_requests`
+  idênticos byte a byte; 32 fotos e a chave cifrada com o mesmo MD5; `integrity_check` ok;
+  reconciliação sem remoções; Logcat sem `sk-`.
+
+### Pendências
+
+1. Decidir sobre a telemetria do ML Kit: aviso ao usuário e/ou tirar os samples do APK.
+2. Decidir sobre a recuperação da questão perdida (JSON apenas, ou suporte a questão sem foto).
+3. Medir o modo imagem (tokens reais da foto) com uma segunda chamada, se autorizada.
+4. Conferir o custo observado com o painel de uso da OpenAI.
+5. O painel de análise mostra o custo observado só enquanto a questão existe; o registro em
+   `ai_requests` não aparece na interface depois que a questão é descartada.
 
 ## 4. Funcionalidades implementadas
 

@@ -26,6 +26,7 @@ import com.questvision.camera.detection.FrameMetrics
 import com.questvision.camera.detection.LumaFrame
 import com.questvision.camera.detection.MonitoringSession
 import com.questvision.camera.detection.MonitoringState
+import com.questvision.camera.detection.MonitoringStats
 import com.questvision.camera.detection.TextDecision
 import com.questvision.camera.recognition.RecognizedText
 import com.questvision.camera.recognition.TextFingerprint
@@ -170,7 +171,7 @@ class QuestVisionCameraViewModel
         fun closeReview() {
             reviewJob?.cancel()
             reviewFile = null
-            updatePreviewing { it.copy(review = null) }
+            updatePreviewing { it.copy(review = null, reviewFile = null) }
         }
 
         /** Preserves the capture under review (exempt from retention) and closes the review. */
@@ -384,25 +385,7 @@ class QuestVisionCameraViewModel
             decision: TextDecision,
             elapsedMs: Long,
         ) {
-            val c = decision.comparison
-            Log.i(
-                OCR_TAG,
-                String.format(
-                    Locale.US,
-                    "%s %s ocr=%dms words=%d novel=%d ratio=%.3f run=%d closest=%d simhash=%016x text=\"%s\" %s",
-                    file.name,
-                    decision.verdict,
-                    elapsedMs,
-                    c.confidentTokens,
-                    c.novelTokens,
-                    c.novelRatio,
-                    c.longestNovelRun,
-                    c.closestIndex,
-                    text.simHash,
-                    text.preview(),
-                    monitoringSession.stats,
-                ),
-            )
+            Log.i(OCR_TAG, ocrDecisionLog(file.name, text, decision, elapsedMs, monitoringSession.stats))
         }
 
         override fun onCaptureFailed(file: File) {
@@ -463,7 +446,7 @@ class QuestVisionCameraViewModel
                     val bitmap = captureRepository.loadForReview(file)
                     if (bitmap != null) {
                         reviewFile = file
-                        updatePreviewing { it.copy(review = bitmap) }
+                        updatePreviewing { it.copy(review = bitmap, reviewFile = file) }
                     } else {
                         // The file vanished (e.g. pruned) or is unreadable: show what remains.
                         refreshHistory()
@@ -544,3 +527,34 @@ class QuestVisionCameraViewModel
             )
         }
     }
+
+/**
+ * The OCR diagnostic line: verdict, timing, word and line counts, match metrics and the session
+ * counters. Never any recognized text, not even a few words, so the questions stay out of Logcat. The
+ * 64-bit simhash identifies the word set for telling duplicates apart without revealing it.
+ */
+internal fun ocrDecisionLog(
+    fileName: String,
+    text: TextFingerprint,
+    decision: TextDecision,
+    elapsedMs: Long,
+    stats: MonitoringStats,
+): String {
+    val c = decision.comparison
+    return String.format(
+        Locale.US,
+        "%s %s ocr=%dms tokens=%d lines=%d words=%d novel=%d ratio=%.3f run=%d closest=%d simhash=%016x %s",
+        fileName,
+        decision.verdict,
+        elapsedMs,
+        text.tokens.size,
+        text.lines.size,
+        c.confidentTokens,
+        c.novelTokens,
+        c.novelRatio,
+        c.longestNovelRun,
+        c.closestIndex,
+        text.simHash,
+        stats,
+    )
+}

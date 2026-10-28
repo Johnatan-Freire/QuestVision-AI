@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Only for HTTPS requests to api.openai.com, started by the user (phase 3.3). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>

@@ -23,8 +23,8 @@ import javax.inject.Singleton
 
 /**
  * OpenAI models the app can use, with official Standard prices in USD per 1M tokens (input / cached
- * input / output) as published on developers.openai.com/api/docs/pricing on 2026-10-22. Used for
- * local cost estimates only; real usage comes from each response's token counts.
+ * input / output) as published on developers.openai.com/api/docs/pricing (checked again on
+ * 2026-10-28). Used for local cost calculations only; the bill is what OpenAI counts.
  */
 enum class AiModel(
     val id: String,
@@ -62,7 +62,24 @@ data class AiSettings(
     val flexProcessing: Boolean = false,
     /** Planned monthly spend. The hard cap must also be set on the OpenAI project. */
     val monthlyBudgetUsd: Double = 5.0,
-)
+    /**
+     * Requests allowed per 24 hours, counted in the request log (so restarting the app resets nothing).
+     * A local brake, not a spend cap: the hard cap is the OpenAI project's limit.
+     */
+    val requestsPerDay: Int = 10,
+    /** `max_output_tokens`: visible answer plus reasoning. Too low ends in an incomplete answer. */
+    val maxOutputTokens: Int = 1_500,
+    /** Longest edge of the photo sent in image mode. */
+    val imageMaxDimension: Int = 2_048,
+    /** The user confirmed the first real request (model, mode, cost) once. */
+    val firstCallConfirmed: Boolean = false,
+) {
+    companion object {
+        val requestsPerDayOptions = listOf(5, 10, 20, 50)
+        val maxOutputTokensOptions = listOf(800, 1_500, 3_000)
+        val imageMaxDimensionOptions = listOf(1_280, 1_600, 2_048)
+    }
+}
 
 interface AiSettingsStore {
     fun load(): AiSettings
@@ -95,6 +112,19 @@ class SharedPreferencesAiSettingsStore
                 flexProcessing = preferences.getBoolean(FLEX, defaults.flexProcessing),
                 monthlyBudgetUsd =
                     preferences.getString(BUDGET, null)?.toDoubleOrNull() ?: defaults.monthlyBudgetUsd,
+                requestsPerDay =
+                    preferences
+                        .getInt(REQUESTS_PER_DAY, defaults.requestsPerDay)
+                        .takeIf { it in AiSettings.requestsPerDayOptions } ?: defaults.requestsPerDay,
+                maxOutputTokens =
+                    preferences
+                        .getInt(MAX_OUTPUT_TOKENS, defaults.maxOutputTokens)
+                        .takeIf { it in AiSettings.maxOutputTokensOptions } ?: defaults.maxOutputTokens,
+                imageMaxDimension =
+                    preferences
+                        .getInt(IMAGE_MAX_DIMENSION, defaults.imageMaxDimension)
+                        .takeIf { it in AiSettings.imageMaxDimensionOptions } ?: defaults.imageMaxDimension,
+                firstCallConfirmed = preferences.getBoolean(FIRST_CALL_CONFIRMED, defaults.firstCallConfirmed),
             )
         }
 
@@ -106,6 +136,10 @@ class SharedPreferencesAiSettingsStore
                 .putBoolean(AUTOMATIC, settings.processAutomaticCaptures)
                 .putBoolean(FLEX, settings.flexProcessing)
                 .putString(BUDGET, settings.monthlyBudgetUsd.toString())
+                .putInt(REQUESTS_PER_DAY, settings.requestsPerDay)
+                .putInt(MAX_OUTPUT_TOKENS, settings.maxOutputTokens)
+                .putInt(IMAGE_MAX_DIMENSION, settings.imageMaxDimension)
+                .putBoolean(FIRST_CALL_CONFIRMED, settings.firstCallConfirmed)
                 .apply()
         }
 
@@ -116,5 +150,9 @@ class SharedPreferencesAiSettingsStore
             const val AUTOMATIC = "process_automatic_captures"
             const val FLEX = "flex_processing"
             const val BUDGET = "monthly_budget_usd"
+            const val REQUESTS_PER_DAY = "requests_per_day"
+            const val MAX_OUTPUT_TOKENS = "max_output_tokens"
+            const val IMAGE_MAX_DIMENSION = "image_max_dimension"
+            const val FIRST_CALL_CONFIRMED = "first_call_confirmed"
         }
     }

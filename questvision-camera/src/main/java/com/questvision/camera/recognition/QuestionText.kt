@@ -66,9 +66,6 @@ class TextFingerprint(
     val confidentCount: Int = tokens.count { it.confident }
     val simHash: Long = simHash(distinct)
 
-    /** The first words, for logs. */
-    fun preview(maxTokens: Int = 12): String = tokens.take(maxTokens).joinToString(" ") { it.value }
-
     companion object {
         fun of(
             text: RecognizedText,

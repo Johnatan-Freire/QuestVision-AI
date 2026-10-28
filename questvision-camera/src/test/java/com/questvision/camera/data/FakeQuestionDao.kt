@@ -151,6 +151,31 @@ internal class FakeQuestionDao : QuestionDao {
         updatedAt: Long,
     ) = change(id) { it.copy(imagePath = imagePath, updatedAt = updatedAt) }
 
+    override suspend fun claimForAi(
+        id: String,
+        updatedAt: Long,
+    ): Int {
+        val row = rows.value[id]?.takeIf { it.aiStatus != AiStatus.PROCESSING } ?: return 0
+        return change(id) { row.copy(aiStatus = AiStatus.PROCESSING, attempts = row.attempts + 1, lastError = null, updatedAt = updatedAt) }
+    }
+
+    override suspend fun failAi(
+        id: String,
+        error: String,
+        updatedAt: Long,
+    ): Int {
+        if (rows.value[id]?.aiStatus != AiStatus.PROCESSING) return 0
+        return change(id) { it.copy(aiStatus = AiStatus.FAILED, lastError = error, updatedAt = updatedAt) }
+    }
+
+    override suspend fun failAllProcessing(
+        error: String,
+        updatedAt: Long,
+    ): Int =
+        rows.value.values
+            .filter { it.aiStatus == AiStatus.PROCESSING }
+            .sumOf { row -> change(row.id) { it.copy(aiStatus = AiStatus.FAILED, lastError = error, updatedAt = updatedAt) } }
+
     override suspend fun deleteQuestion(id: String): Int {
         if (id !in rows.value) return 0
         rows.value = rows.value - id
@@ -164,6 +189,68 @@ internal class FakeQuestionDao : QuestionDao {
                 .map { it.id }
         rows.value = rows.value - doomed.toSet()
         return doomed.size
+    }
+}
+
+/** In-memory [AiRequestDao]. */
+internal class FakeAiRequestDao : AiRequestDao {
+    val rows = LinkedHashMap<Long, AiRequestEntity>()
+    private var nextId = 1L
+
+    override suspend fun insert(request: AiRequestEntity): Long {
+        val id = nextId++
+        rows[id] = request.copy(id = id)
+        return id
+    }
+
+    override suspend fun finish(
+        id: Long,
+        outcome: AiRequestOutcome,
+        finishedAt: Long,
+        errorCode: String?,
+        httpStatus: Int?,
+        responseId: String?,
+        inputTokens: Int?,
+        cachedTokens: Int?,
+        outputTokens: Int?,
+        reasoningTokens: Int?,
+        cacheWriteTokens: Int?,
+        serviceTier: String?,
+    ): Int {
+        val row = rows[id] ?: return 0
+        rows[id] =
+            row.copy(
+                outcome = outcome,
+                finishedAt = finishedAt,
+                errorCode = errorCode,
+                httpStatus = httpStatus,
+                responseId = responseId,
+                inputTokens = inputTokens,
+                cachedTokens = cachedTokens,
+                outputTokens = outputTokens,
+                reasoningTokens = reasoningTokens,
+                cacheWriteTokens = cacheWriteTokens,
+                serviceTier = serviceTier,
+            )
+        return 1
+    }
+
+    override suspend fun request(id: Long) = rows[id]
+
+    override suspend fun requestsFor(questionId: String) =
+        rows.values
+            .filter {
+                it.questionId == questionId
+            }.sortedWith(compareByDescending<AiRequestEntity> { it.startedAt }.thenByDescending { it.id })
+
+    override suspend fun all() = rows.values.sortedWith(compareByDescending<AiRequestEntity> { it.startedAt }.thenByDescending { it.id })
+
+    override suspend fun countSince(since: Long) = rows.values.count { it.startedAt >= since }
+
+    override suspend fun interruptAllSent(finishedAt: Long): Int {
+        val sent = rows.values.filter { it.outcome == AiRequestOutcome.SENT }
+        sent.forEach { rows[it.id] = it.copy(outcome = AiRequestOutcome.INTERRUPTED, finishedAt = finishedAt) }
+        return sent.size
     }
 }
 

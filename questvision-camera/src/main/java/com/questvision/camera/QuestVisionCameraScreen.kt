@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -45,6 +46,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
@@ -99,6 +101,7 @@ import com.android.camera.coreui.scaffold.CameraSampleScaffold
 import com.android.camera.coreui.state.ErrorView
 import com.android.camera.coreui.state.LoadingView
 import com.android.camera.coreui.state.UnsupportedView
+import com.questvision.camera.ai.AiAnalysisPanel
 import com.questvision.camera.detection.MonitoringState
 import com.questvision.camera.settings.AiSettingsPanel
 import kotlinx.coroutines.delay
@@ -126,6 +129,7 @@ fun QuestVisionCameraScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showAnalysis by rememberSaveable { mutableStateOf(false) }
 
     CameraSampleScaffold(
         permissions = CameraPermissions.PHOTO,
@@ -181,7 +185,13 @@ fun QuestVisionCameraScreen(
                         onBack = viewModel::closeReview,
                         doneLabel = stringResource(R.string.questvision_keep_capture),
                     )
+                    state.reviewFile?.let { file ->
+                        // Sends nothing by itself: the panel only analyzes on an explicit tap.
+                        AiAnalysisButton(onClick = { showAnalysis = true })
+                        if (showAnalysis) AiAnalysisPanel(file = file, onDismiss = { showAnalysis = false })
+                    }
                 }
+                if (state.review == null && showAnalysis) showAnalysis = false
                 // On top of everything; the camera and monitoring keep running underneath.
                 if (showSettings) {
                     AiSettingsPanel(onDismiss = { showSettings = false })
@@ -428,6 +438,24 @@ private fun SidePanel(
                 CaptureButton(state = state, viewModel = viewModel)
             }
         }
+    }
+}
+
+/** Opens the AI analysis of the photo under review (top right, opposite the back button). */
+@Composable
+private fun AiAnalysisButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.TopEnd) {
+        ScrimIconButton(
+            onClick = onClick,
+            imageVector = Icons.Filled.AutoAwesome,
+            contentDescription = stringResource(R.string.questvision_ai_open),
+            size = 34.dp,
+            iconSize = 18.dp,
+            modifier = Modifier.statusBarsPadding().padding(16.dp),
+        )
     }
 }
 
