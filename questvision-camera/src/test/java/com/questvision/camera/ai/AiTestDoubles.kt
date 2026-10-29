@@ -90,21 +90,19 @@ internal fun autoAnalysis(
 )
 
 internal class FakeImageEncoder(
-    var image: EncodedImage? = EncodedImage("data:image/jpeg;base64,/9j/AAAA", 1600, 1200, cropped = true),
+    var image: EncodedImage? = EncodedImage("data:image/jpeg;base64,/9j/AAAA", 1600, 1200, cropped = true, byteCount = 3),
     /** Whether the question's region is found in the photo. */
     var regionFound: Boolean = true,
 ) : QuestionImageEncoder {
     val requests = mutableListOf<Pair<File, Int>>()
-    val regions = mutableListOf<RegionPolicy>()
 
     override suspend fun encode(
         file: File,
         maxDimension: Int,
-        region: RegionPolicy,
-    ): EncodedImage? {
+    ): ImageEncoding {
         requests += file to maxDimension
-        regions += region
-        return if (!regionFound && region == RegionPolicy.QUESTION_ONLY) null else image
+        val encoded = image ?: return ImageEncoding.Unreadable
+        return if (regionFound) ImageEncoding.Encoded(encoded) else ImageEncoding.QuestionNotFound
     }
 }
 

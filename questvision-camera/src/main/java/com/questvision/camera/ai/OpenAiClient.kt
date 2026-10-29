@@ -16,6 +16,7 @@
 package com.questvision.camera.ai
 
 import com.questvision.camera.data.AnalysisMode
+import com.questvision.camera.data.SentImage
 import com.questvision.camera.data.TokenUsage
 import com.questvision.camera.settings.ApiKey
 import kotlinx.coroutines.withTimeoutOrNull
@@ -62,9 +63,11 @@ class AiInput(
     val mode: AnalysisMode,
     val text: String,
     val imageDataUrl: String? = null,
+    /** The size of the image in [imageDataUrl] (never its content), for the request log. */
+    val image: SentImage? = null,
 ) {
     // Never print the question or the image (logs, crash reports).
-    override fun toString() = "AiInput(mode=$mode, textChars=${text.length}, image=${imageDataUrl != null})"
+    override fun toString() = "AiInput(mode=$mode, textChars=${text.length}, image=$image)"
 }
 
 data class AiRequestOptions(
@@ -248,6 +251,10 @@ private fun tokenUsage(usage: JsonObject): TokenUsage {
         inputTokens = usage.int("input_tokens"),
         cachedTokens = inputDetails?.int("cached_tokens"),
         cacheWriteTokens = inputDetails?.int("cache_write_tokens"),
+        // Writes by lifetime (GPT-6: 30 min by default, 12 h on request); they sum to cache_write_tokens.
+        cacheWrite12hTokens =
+            ((inputDetails?.get("cache_write_tokens_details") ?: usage["cache_write_tokens_details"]) as? JsonObject)
+                ?.int("ttl_12h_tokens"),
         outputTokens = usage.int("output_tokens"),
         reasoningTokens = (usage["output_tokens_details"] as? JsonObject)?.int("reasoning_tokens"),
     )

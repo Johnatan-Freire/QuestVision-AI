@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -81,6 +82,7 @@ fun CaptureHistory(
     onOpen: (File) -> Unit,
     loadThumbnail: suspend (File) -> Bitmap?,
     modifier: Modifier = Modifier,
+    onCleanPending: (() -> Unit)? = null,
 ) {
     val dateFormat = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM) }
     Column(
@@ -110,6 +112,14 @@ fun CaptureHistory(
                 color = Color.White,
             )
             Spacer(modifier = Modifier.weight(1f))
+            if (onCleanPending != null) {
+                TextButton(onClick = onCleanPending) {
+                    Text(
+                        text = stringResource(R.string.questvision_cleanup_button),
+                        style = TextStyle(fontFamily = monoFontFamily, fontSize = 11.sp),
+                    )
+                }
+            }
             Text(
                 text = pluralStringResource(R.plurals.questvision_history_count, entries.size, entries.size),
                 style = TextStyle(fontFamily = monoFontFamily, fontSize = 11.sp),

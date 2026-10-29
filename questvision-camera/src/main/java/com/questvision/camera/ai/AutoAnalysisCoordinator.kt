@@ -319,7 +319,7 @@ class AutoAnalysisCoordinator
                     continue
                 }
                 _state.update { it.copy(phase = AutoPhase.ANALYZING, queued = queue.size) }
-                val result = analyzer.analyze(item.questionId, item.mode, automatic = true)
+                val result = analyzer.analyze(item.questionId, item.mode)
                 handle(item, row, result)
             }
             worker = null

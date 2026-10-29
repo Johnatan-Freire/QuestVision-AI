@@ -215,6 +215,7 @@ internal class FakeAiRequestDao : AiRequestDao {
         outputTokens: Int?,
         reasoningTokens: Int?,
         cacheWriteTokens: Int?,
+        cacheWrite12hTokens: Int?,
         serviceTier: String?,
     ): Int {
         val row = rows[id] ?: return 0
@@ -230,6 +231,7 @@ internal class FakeAiRequestDao : AiRequestDao {
                 outputTokens = outputTokens,
                 reasoningTokens = reasoningTokens,
                 cacheWriteTokens = cacheWriteTokens,
+                cacheWrite12hTokens = cacheWrite12hTokens,
                 serviceTier = serviceTier,
             )
         return 1

@@ -274,7 +274,7 @@ class QuestionDaoTest {
 
             database.withTransaction {
                 dao.saveAiResult("id-a.jpg", AiStatus.ANSWERED, "{\"answer\":[\"B\"]}", "gpt-6-luna", 25L)
-                requests.finish(requestId, AiRequestOutcome.SUCCEEDED, 25L, null, 200, "resp_1", 3_400, 0, 120, 60, 0, "default")
+                requests.finish(requestId, AiRequestOutcome.SUCCEEDED, 25L, null, 200, "resp_1", 3_400, 0, 120, 60, 0, null, "default")
             }
             dao.deleteQuestion("id-a.jpg")
 

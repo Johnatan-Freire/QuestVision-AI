@@ -40,30 +40,33 @@ class EncodedImage(
     val height: Int,
     /** Cut to the question (sidebar, titles and browser left out) rather than the whole photo. */
     val cropped: Boolean = false,
+    /** The JPEG's size in bytes, before base64. */
+    val byteCount: Int = 0,
 ) {
-    override fun toString() = "EncodedImage(${width}x$height, cropped=$cropped, ${dataUrl.length} chars)"
+    override fun toString() = "EncodedImage(${width}x$height, cropped=$cropped, $byteCount bytes)"
 }
 
-/** How much of the photo the image mode may send. */
-enum class RegionPolicy {
-    /** Only the question's region; null (nothing sent) when it can't be found safely. Automatic analysis. */
-    QUESTION_ONLY,
+/** What the image mode can send for a photo. The whole photo is never an option. */
+sealed interface ImageEncoding {
+    /** The question's region, ready for the request. */
+    data class Encoded(
+        val image: EncodedImage,
+    ) : ImageEncoding
 
-    /** The question's region when found, else the whole photo: the user chose the image mode. */
-    QUESTION_OR_WHOLE,
+    /** The photo could not be read. */
+    data object Unreadable : ImageEncoding
+
+    /** The question's region could not be found safely: nothing is sent, manual or automatic. */
+    data object QuestionNotFound : ImageEncoding
 }
 
 /** Prepares a capture for the image mode; a seam so the analysis can be tested on the JVM. */
 interface QuestionImageEncoder {
-    /**
-     * The upright photo cut per [region], its longest edge at most [maxDimension], as a JPEG data URL;
-     * null if unreadable, or if [RegionPolicy.QUESTION_ONLY] and the question's region was not found.
-     */
+    /** The question cut from the upright photo, its longest edge at most [maxDimension], as a JPEG data URL. */
     suspend fun encode(
         file: File,
         maxDimension: Int,
-        region: RegionPolicy = RegionPolicy.QUESTION_OR_WHOLE,
-    ): EncodedImage?
+    ): ImageEncoding
 }
 
 /**
@@ -82,9 +85,8 @@ class JpegQuestionImageEncoder
         override suspend fun encode(
             file: File,
             maxDimension: Int,
-            region: RegionPolicy,
-        ): EncodedImage? {
-            val photo = captures.loadForReview(file) ?: return null
+        ): ImageEncoding {
+            val photo = captures.loadForReview(file) ?: return ImageEncoding.Unreadable
             val text =
                 try {
                     textRecognition.recognize(photo)
@@ -100,19 +102,19 @@ class JpegQuestionImageEncoder
                 text?.contentRotation?.takeIf { it != 0 }?.let { degrees -> rotatedForText(photo, degrees).also { photo.recycle() } }
                     ?: photo
             val found = text?.let { questionRegion(it) }
-            if (found == null && region == RegionPolicy.QUESTION_ONLY) {
+            if (found == null) {
                 decoded.recycle()
-                return null
+                return ImageEncoding.QuestionNotFound
             }
             return withContext(Dispatchers.Default) {
                 val cut =
-                    found?.let { r ->
+                    found.let { r ->
                         val left = (r.left * decoded.width).roundToInt().coerceIn(0, decoded.width - 1)
                         val top = (r.top * decoded.height).roundToInt().coerceIn(0, decoded.height - 1)
                         val width = (r.width * decoded.width).roundToInt().coerceIn(1, decoded.width - left)
                         val height = (r.height * decoded.height).roundToInt().coerceIn(1, decoded.height - top)
                         Bitmap.createBitmap(decoded, left, top, width, height)
-                    } ?: decoded
+                    }
                 val scale = maxDimension.toFloat() / max(cut.width, cut.height)
                 val bitmap =
                     if (scale < 1f) {
@@ -135,12 +137,13 @@ class JpegQuestionImageEncoder
                         dataUrl = "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP),
                         width = bitmap.width,
                         height = bitmap.height,
-                        cropped = found != null,
+                        cropped = true,
+                        byteCount = bytes.size,
                     )
                 if (bitmap !== cut) bitmap.recycle()
                 if (cut !== decoded) cut.recycle()
                 decoded.recycle()
-                image
+                ImageEncoding.Encoded(image)
             }
         }
     }

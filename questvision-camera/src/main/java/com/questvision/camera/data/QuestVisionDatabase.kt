@@ -33,14 +33,15 @@ import javax.inject.Singleton
  * 3.1). Schema changes must come with a [androidx.room.migration.Migration] or auto-migration: there
  * is deliberately no destructive fallback, so an update never wipes the history.
  *
- * Versions: 1 = sessions and questions (phase 3.2); 2 = adds `ai_requests` (phase 3.3), an additive
- * auto-migration that leaves existing rows untouched.
+ * Versions: 1 = sessions and questions (phase 3.2); 2 = adds `ai_requests` (phase 3.3); 3 = adds to
+ * `ai_requests` the 12-hour cache writes and the sent image's size (phase 3.5). Both are additive
+ * auto-migrations (new table / nullable columns) that leave existing rows untouched.
  */
 @Database(
     entities = [CaptureSessionEntity::class, QuestionEntity::class, AiRequestEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],
 )
 abstract class QuestVisionDatabase : RoomDatabase() {
     abstract fun questionDao(): QuestionDao

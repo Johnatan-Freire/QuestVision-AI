@@ -170,4 +170,26 @@
     <string name="questvision_ai_reject_region">The question\'s area could not be found in the photo; nothing was sent</string>
     <string name="questvision_storage_low">Little free storage: monitoring paused so no capture fails</string>
     <string name="questvision_ai_reject_busy">Another question is being analyzed; try again when it finishes</string>
+    <string name="questvision_ai_confirm_each">Send this question to OpenAI (%1$s, %2$s)? It uses credits from your account: up to about US$ %3$s per request (approximate, not a cap).</string>
+    <string name="questvision_ai_confirm_image_suffix">" Plus the image, which is not estimated. Only the question\'s crop is sent."</string>
+    <string name="questvision_review_back">Back</string>
+    <string name="questvision_photo_missing">This photo is no longer on the phone. The AI\'s answer and the request record were kept: open them with the AI button.</string>
+    <string name="questvision_discard_refused">Not discarded: the AI is analyzing this question. Try again when it finishes.</string>
+    <string name="questvision_discard_failed">The capture could not be discarded; nothing was lost.</string>
+    <string name="questvision_cleanup_button">Clean pending</string>
+    <string name="questvision_cleanup_title">Delete pending captures?</string>
+    <string name="questvision_cleanup_none">There are no pending captures to clean.</string>
+    <string name="questvision_cleanup_cancel">Cancel</string>
+    <plurals name="questvision_cleanup_text">
+        <item quantity="one">%1$d pending capture, never sent to the AI (%2$s MB, from %3$s to %4$s), will be deleted: photo and record. Answered, in-analysis, failed, already-sent and kept captures are never touched. This can\'t be undone.</item>
+        <item quantity="other">%1$d pending captures, never sent to the AI (%2$s MB, from %3$s to %4$s), will be deleted: photos and records. Answered, in-analysis, failed, already-sent and kept captures are never touched. This can\'t be undone.</item>
+    </plurals>
+    <plurals name="questvision_cleanup_confirm">
+        <item quantity="one">Delete %1$d</item>
+        <item quantity="other">Delete %1$d</item>
+    </plurals>
+    <plurals name="questvision_cleanup_done">
+        <item quantity="one">%1$d pending capture deleted</item>
+        <item quantity="other">%1$d pending captures deleted</item>
+    </plurals>
 </resources>

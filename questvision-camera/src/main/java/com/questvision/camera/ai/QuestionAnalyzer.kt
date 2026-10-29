@@ -23,6 +23,7 @@ import com.questvision.camera.data.AiStatus
 import com.questvision.camera.data.AnalysisMode
 import com.questvision.camera.data.QuestionEntity
 import com.questvision.camera.data.QuestionRepository
+import com.questvision.camera.data.SentImage
 import com.questvision.camera.data.TokenUsage
 import com.questvision.camera.settings.AiSettings
 import com.questvision.camera.settings.AiSettingsStore
@@ -46,13 +47,15 @@ private fun logRequest(
     httpStatus: Int?,
     usage: TokenUsage?,
     serviceTier: String?,
+    image: SentImage?,
 ) {
     Log.i(
         AI_TAG,
         "request mode=$mode model=$model tier=${serviceTier ?: "-"} outcome=$outcome http=${httpStatus ?: "-"} " +
             "tokens in=${usage?.inputTokens ?: "-"} cached=${usage?.cachedTokens ?: "-"} " +
-            "cacheWrite=${usage?.cacheWriteTokens ?: "-"} out=${usage?.outputTokens ?: "-"} " +
-            "reasoning=${usage?.reasoningTokens ?: "-"}",
+            "cacheWrite=${usage?.cacheWriteTokens ?: "-"} cacheWrite12h=${usage?.cacheWrite12hTokens ?: "-"} " +
+            "out=${usage?.outputTokens ?: "-"} reasoning=${usage?.reasoningTokens ?: "-"} " +
+            "image=${image?.let { "${it.width}x${it.height}/${it.bytes}B" } ?: "-"}",
     )
 }
 
@@ -99,14 +102,9 @@ class QuestionAnalyzer
         private val guard = Mutex()
         private val inFlight = HashSet<String>()
 
-        /**
-         * [automatic]: sent by the session without the user choosing the mode, so the image mode may
-         * only send the question's region (never the whole photo).
-         */
         suspend fun analyze(
             questionId: String,
             mode: AnalysisMode,
-            automatic: Boolean = false,
         ): AnalysisResult {
             // One analysis at a time in the whole app (manual or automatic): never two requests in flight.
             val admitted =
@@ -125,7 +123,8 @@ class QuestionAnalyzer
                 if (questions.aiRequestsInLimitWindow() >= config.requestsPerDay) {
                     return AnalysisResult.Rejected(AnalysisRejection.REQUEST_LIMIT)
                 }
-                val input = prepare(question, mode, config, automatic) ?: return AnalysisResult.Rejected(rejectionFor(mode, automatic))
+                val (input, rejection) = prepare(question, mode, config)
+                if (input == null) return AnalysisResult.Rejected(rejection ?: AnalysisRejection.IMAGE_UNAVAILABLE)
                 return keys.useKey { key -> send(question.id, key, input, config) }
                     ?: AnalysisResult.Rejected(AnalysisRejection.NO_KEY)
             } finally {
@@ -133,35 +132,41 @@ class QuestionAnalyzer
             }
         }
 
+        /** The request's input, or why nothing can be sent. The image mode only ever sends the question's crop. */
         private suspend fun prepare(
             question: QuestionEntity,
             mode: AnalysisMode,
             config: AiSettings,
-            automatic: Boolean,
-        ): AiInput? =
+        ): Pair<AiInput?, AnalysisRejection?> =
             when (mode) {
                 AnalysisMode.TEXT -> {
-                    extractQuestionText(question.ocrText)?.let { AiInput(mode, textPrompt(it.text)) }
+                    extractQuestionText(question.ocrText)?.let { AiInput(mode, textPrompt(it.text)) to null }
+                        ?: (null to AnalysisRejection.INSUFFICIENT_TEXT)
                 }
 
                 AnalysisMode.IMAGE -> {
-                    images
-                        .encode(
-                            questions.fileOf(question),
-                            config.imageMaxDimension,
-                            if (automatic) RegionPolicy.QUESTION_ONLY else RegionPolicy.QUESTION_OR_WHOLE,
-                        )?.let { AiInput(mode, imagePrompt(question.questionNumber), it.dataUrl) }
+                    when (val encoding = images.encode(questions.fileOf(question), config.imageMaxDimension)) {
+                        is ImageEncoding.Encoded -> {
+                            val image = encoding.image
+                            AiInput(
+                                mode,
+                                imagePrompt(question.questionNumber),
+                                image.dataUrl,
+                                SentImage(image.width, image.height, image.byteCount),
+                            ) to
+                                null
+                        }
+
+                        ImageEncoding.Unreadable -> {
+                            null to AnalysisRejection.IMAGE_UNAVAILABLE
+                        }
+
+                        ImageEncoding.QuestionNotFound -> {
+                            null to AnalysisRejection.QUESTION_REGION_NOT_FOUND
+                        }
+                    }
                 }
             }
-
-        private fun rejectionFor(
-            mode: AnalysisMode,
-            automatic: Boolean,
-        ) = when {
-            mode == AnalysisMode.TEXT -> AnalysisRejection.INSUFFICIENT_TEXT
-            automatic -> AnalysisRejection.QUESTION_REGION_NOT_FOUND
-            else -> AnalysisRejection.IMAGE_UNAVAILABLE
-        }
 
         private suspend fun send(
             questionId: String,
@@ -172,7 +177,7 @@ class QuestionAnalyzer
             val model = config.primaryModel.id
             // The limit is checked again here, atomically with the claim and the log entry.
             val requestId =
-                when (val start = questions.beginAiRequest(questionId, model, input.mode, config.requestsPerDay)) {
+                when (val start = questions.beginAiRequest(questionId, model, input.mode, config.requestsPerDay, input.image)) {
                     is AiRequestStart.Started -> start.requestId
                     AiRequestStart.LimitReached -> return AnalysisResult.Rejected(AnalysisRejection.REQUEST_LIMIT)
                     AiRequestStart.AlreadyProcessing -> return AnalysisResult.Rejected(AnalysisRejection.ALREADY_PROCESSING)
@@ -180,59 +185,9 @@ class QuestionAnalyzer
             try {
                 val options = AiRequestOptions(model = model, maxOutputTokens = config.maxOutputTokens, flex = config.flexProcessing)
                 val result = client.send(key, input, options)
-                when (result) {
-                    is AiCallResult.Failed -> {
-                        logRequest(input.mode, model, result.error.name, result.httpStatus, result.usage, result.serviceTier)
-                    }
-
-                    is AiCallResult.Completed -> {
-                        logRequest(input.mode, model, "COMPLETED", result.httpStatus, result.usage, result.serviceTier)
-                    }
-                }
-                return when (result) {
-                    is AiCallResult.Failed -> {
-                        questions.failAi(
-                            questionId,
-                            requestId,
-                            result.error.name,
-                            httpStatus = result.httpStatus,
-                            responseId = result.responseId,
-                            usage = result.usage,
-                            serviceTier = result.serviceTier,
-                        )
-                        AnalysisResult.Failed(result.error)
-                    }
-
-                    is AiCallResult.Completed -> {
-                        val answer = parseAiAnswer(result.outputText, input.mode)
-                        if (answer == null) {
-                            questions.failAi(
-                                questionId,
-                                requestId,
-                                AiError.INVALID_RESPONSE.name,
-                                httpStatus = result.httpStatus,
-                                responseId = result.responseId,
-                                usage = result.usage,
-                                serviceTier = result.serviceTier,
-                            )
-                            AnalysisResult.Failed(AiError.INVALID_RESPONSE)
-                        } else {
-                            val status = if (answer.needsReview) AiStatus.NEEDS_REVIEW else AiStatus.ANSWERED
-                            questions.completeAi(
-                                questionId,
-                                requestId,
-                                status,
-                                answer.toStoredJson(),
-                                model,
-                                result.responseId,
-                                result.httpStatus,
-                                result.usage,
-                                result.serviceTier,
-                            )
-                            AnalysisResult.Answered(answer, status, result.usage)
-                        }
-                    }
-                }
+                // The answer is here (and possibly billed): storing it must not be cut short by a
+                // cancellation that arrives now, or a paid answer would be lost.
+                return withContext(NonCancellable) { store(questionId, requestId, model, input, result) }
             } catch (exc: CancellationException) {
                 withContext(NonCancellable) {
                     questions.failAi(questionId, requestId, AiError.CANCELLED.name, outcome = AiRequestOutcome.CANCELLED)
@@ -240,8 +195,89 @@ class QuestionAnalyzer
                 throw exc
             } catch (exc: Exception) {
                 // E.g. the database failing while saving: never leave the question stuck in PROCESSING.
-                runCatching { questions.failAi(questionId, requestId, AiError.UNEXPECTED.name) }
+                runCatching { questions.failAi(questionId, requestId, AiError.UNEXPECTED.name, outcome = AiRequestOutcome.UNKNOWN) }
                 return AnalysisResult.Failed(AiError.UNEXPECTED)
+            }
+        }
+
+        /** Logs and stores what came back for request [requestId]. */
+        private suspend fun store(
+            questionId: String,
+            requestId: Long,
+            model: String,
+            input: AiInput,
+            result: AiCallResult,
+        ): AnalysisResult {
+            when (result) {
+                is AiCallResult.Failed -> {
+                    logRequest(
+                        input.mode,
+                        model,
+                        result.error.name,
+                        result.httpStatus,
+                        result.usage,
+                        result.serviceTier,
+                        input.image,
+                    )
+                }
+
+                is AiCallResult.Completed -> {
+                    logRequest(
+                        input.mode,
+                        model,
+                        "COMPLETED",
+                        result.httpStatus,
+                        result.usage,
+                        result.serviceTier,
+                        input.image,
+                    )
+                }
+            }
+            return when (result) {
+                is AiCallResult.Failed -> {
+                    questions.failAi(
+                        questionId,
+                        requestId,
+                        result.error.name,
+                        // No answer at all: it may have been processed and billed.
+                        outcome = if (result.error.outcomeUnknown) AiRequestOutcome.UNKNOWN else AiRequestOutcome.FAILED,
+                        httpStatus = result.httpStatus,
+                        responseId = result.responseId,
+                        usage = result.usage,
+                        serviceTier = result.serviceTier,
+                    )
+                    AnalysisResult.Failed(result.error)
+                }
+
+                is AiCallResult.Completed -> {
+                    val answer = parseAiAnswer(result.outputText, input.mode)
+                    if (answer == null) {
+                        questions.failAi(
+                            questionId,
+                            requestId,
+                            AiError.INVALID_RESPONSE.name,
+                            httpStatus = result.httpStatus,
+                            responseId = result.responseId,
+                            usage = result.usage,
+                            serviceTier = result.serviceTier,
+                        )
+                        AnalysisResult.Failed(AiError.INVALID_RESPONSE)
+                    } else {
+                        val status = if (answer.needsReview) AiStatus.NEEDS_REVIEW else AiStatus.ANSWERED
+                        questions.completeAi(
+                            questionId,
+                            requestId,
+                            status,
+                            answer.toStoredJson(),
+                            model,
+                            result.responseId,
+                            result.httpStatus,
+                            result.usage,
+                            result.serviceTier,
+                        )
+                        AnalysisResult.Answered(answer, status, result.usage)
+                    }
+                }
             }
         }
     }

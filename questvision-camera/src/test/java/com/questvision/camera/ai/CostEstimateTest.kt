@@ -38,6 +38,33 @@ class CostEstimateTest {
         assertEquals(standard * 2, observedCostUsd(AiModel.GPT_6_LUNA, usage, "priority")!!, 1e-15)
     }
 
+    // Phase 3.5 cost audit: the first real image call (2026-10-29), against the official table.
+    @Test
+    fun theFirstImageCall_costsWhatTheTableSays() {
+        // 1,486 input tokens, 1,483 of them written to the 30-minute cache, 56 output tokens, Standard.
+        val usage = TokenUsage(inputTokens = 1_486, cachedTokens = 0, outputTokens = 56, reasoningTokens = 0, cacheWriteTokens = 1_483)
+        val expected = (3 * 0.10 + 1_483 * 0.125 + 56 * 0.50) / 1_000_000.0
+
+        assertEquals(expected, observedCostUsd(AiModel.GPT_6_LUNA, usage, "default")!!, 1e-12)
+        assertEquals(0.000213675, expected, 1e-9)
+    }
+
+    @Test
+    fun twelveHourCacheWrites_costTwoAndAHalfTimesTheInput() {
+        val usage =
+            TokenUsage(
+                inputTokens = 1_000,
+                cachedTokens = 0,
+                outputTokens = 0,
+                reasoningTokens = 0,
+                cacheWriteTokens = 1_000,
+                cacheWrite12hTokens = 400,
+            )
+        val expected = (600 * 0.10 * 1.25 + 400 * 0.10 * 2.5) / 1_000_000.0
+
+        assertEquals(expected, observedCostUsd(AiModel.GPT_6_LUNA, usage, "default")!!, 1e-12)
+    }
+
     @Test
     fun observedCost_isNeverMadeUp() {
         assertNull(observedCostUsd(AiModel.GPT_6_LUNA, usage, null))

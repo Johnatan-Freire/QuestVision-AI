@@ -260,6 +260,16 @@ private fun ConfirmationBox(
                         )
                     }
 
+                    Confirmation.SEND -> {
+                        stringResource(
+                            R.string.questvision_ai_confirm_each,
+                            state.model.id,
+                            modeLabel(state.mode),
+                            formatUsd(state.estimate?.totalUsd ?: 0.0),
+                        ) +
+                            if (state.estimate?.excludesImage == true) stringResource(R.string.questvision_ai_confirm_image_suffix) else ""
+                    }
+
                     Confirmation.RESEND_UNKNOWN_OUTCOME -> {
                         stringResource(R.string.questvision_ai_confirm_resend_unknown)
                     }

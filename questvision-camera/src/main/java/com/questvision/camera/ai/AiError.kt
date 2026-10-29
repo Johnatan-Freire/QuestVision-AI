@@ -99,8 +99,8 @@ enum class AnalysisRejection {
     IMAGE_UNAVAILABLE,
 
     /**
-     * Automatic image mode only: the question's region could not be found safely in the photo, so
-     * nothing was sent (the whole photo is never sent automatically). The question stays PENDING.
+     * Image mode: the question's region could not be found safely in the photo, so nothing was sent.
+     * The whole photo is never sent, manually or automatically. The question keeps its state.
      */
     QUESTION_REGION_NOT_FOUND,
 }

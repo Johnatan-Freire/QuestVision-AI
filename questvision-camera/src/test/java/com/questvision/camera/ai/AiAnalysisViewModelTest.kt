@@ -139,9 +139,12 @@ class AiAnalysisViewModelTest {
                 assertEquals((412 * 0.10 + 96 * 0.50) / 1_000_000.0, lastRequestCostUsd!!, 1e-12)
             }
 
-            // Later requests go straight out.
+            // Every later request is confirmed too (model, mode, credits), just without the first-call advice.
             panel.select(second)
             panel.analyze()
+            assertEquals(Confirmation.SEND, panel.uiState.value.confirming)
+            assertEquals(1, client.calls)
+            panel.confirm()
             assertEquals(2, client.calls)
         }
 
@@ -168,6 +171,7 @@ class AiAnalysisViewModelTest {
                     .excludesImage,
             )
             panel.analyze()
+            panel.confirm()
 
             assertEquals(AnalysisMode.IMAGE, client.inputs.single().mode)
         }
@@ -182,6 +186,7 @@ class AiAnalysisViewModelTest {
             panel.select(file)
 
             panel.analyze()
+            panel.confirm()
             assertTrue(panel.uiState.value.running)
             // A second tap while running sends nothing more.
             panel.analyze()
@@ -206,11 +211,13 @@ class AiAnalysisViewModelTest {
             val panel = viewModel()
             panel.select(file)
             panel.analyze()
+            panel.confirm()
             panel.cancel()
             client.gate = null
 
-            // CANCELLED: it may have been processed and billed.
+            // CANCELLED: it may have been processed and billed. The usual confirmation, then this one.
             panel.analyze()
+            panel.confirm()
             assertEquals(Confirmation.RESEND_UNKNOWN_OUTCOME, panel.uiState.value.confirming)
             assertEquals(1, client.calls)
             panel.confirm()
@@ -222,8 +229,10 @@ class AiAnalysisViewModelTest {
             client.replyWith(AiCallResult.Failed(AiError.AUTH, 401))
             panel.select(other)
             panel.analyze()
+            panel.confirm()
             assertEquals(AiError.AUTH, panel.uiState.value.lastError)
             panel.analyze()
+            panel.confirm()
             assertNull(panel.uiState.value.confirming)
             assertEquals(4, client.calls)
         }

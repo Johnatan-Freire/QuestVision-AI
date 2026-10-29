@@ -204,6 +204,21 @@ class OpenAiClientTest {
         }
 
     @Test
+    fun cacheWritesByLifetime_areRead() =
+        runTest {
+            val body =
+                responseBody().replace(
+                    "\"cache_write_tokens\":0}",
+                    "\"cache_write_tokens\":1483,\"cache_write_tokens_details\":{\"ttl_30m_tokens\":1083,\"ttl_12h_tokens\":400}}",
+                )
+            val (result, _) = call { HttpResponse(200, body, null) }
+
+            result as AiCallResult.Completed
+            assertEquals(1483, result.usage!!.cacheWriteTokens)
+            assertEquals(400, result.usage!!.cacheWrite12hTokens)
+        }
+
+    @Test
     fun inputs_neverPrintTheirContent() {
         val input = AiInput(AnalysisMode.IMAGE, "Questão secreta", "data:image/jpeg;base64,AAAA")
 

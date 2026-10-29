@@ -72,6 +72,12 @@ enum class AiRequestOutcome {
 
     /** The app stopped while it was in flight: it may have been processed and billed. */
     INTERRUPTED,
+
+    /**
+     * No answer arrived (connection lost, timeout): OpenAI may still have processed and billed it, so
+     * it is neither a success nor a known failure. Never resent automatically.
+     */
+    UNKNOWN,
 }
 
 /** Delivery of the answer to Telegram (a later phase). */
@@ -175,4 +181,11 @@ data class AiRequestEntity(
     @ColumnInfo(name = "cache_write_tokens") val cacheWriteTokens: Int? = null,
     /** The `service_tier` OpenAI says served the request (`default`, `flex`, `priority`…): sets the price. */
     @ColumnInfo(name = "service_tier") val serviceTier: String? = null,
+    /** Of [cacheWriteTokens], those written with the 12-hour lifetime (2.5× input instead of 1.25×). */
+    @ColumnInfo(name = "cache_write_12h_tokens") val cacheWrite12hTokens: Int? = null,
+    /** Image mode: the size of the image actually sent (the question's crop), never its content. */
+    @ColumnInfo(name = "image_width") val imageWidth: Int? = null,
+    @ColumnInfo(name = "image_height") val imageHeight: Int? = null,
+    /** Image mode: the JPEG's size in bytes, before base64. */
+    @ColumnInfo(name = "image_bytes") val imageBytes: Int? = null,
 )

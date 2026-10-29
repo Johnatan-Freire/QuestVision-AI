@@ -17,6 +17,7 @@ package com.questvision.camera
 
 import android.graphics.Bitmap
 import com.questvision.camera.ai.AutoAnalysisState
+import com.questvision.camera.data.PendingCleanup
 import com.questvision.camera.detection.MonitoringState
 import com.questvision.camera.detection.MonitoringStats
 import java.io.File
@@ -62,6 +63,15 @@ enum class Notice {
 
     /** Little free storage: monitoring paused before a capture could fail. */
     STORAGE_LOW,
+
+    /** "Discard" was refused: the AI is analyzing this question. */
+    DISCARD_REFUSED,
+
+    /** "Discard" failed (the file could not be deleted); nothing was removed. */
+    DISCARD_FAILED,
+
+    /** A manual cleanup removed [QuestVisionCameraUiState.Previewing.cleanedCount] pending captures. */
+    PENDING_CLEANED,
 }
 
 sealed interface QuestVisionCameraUiState {
@@ -79,6 +89,15 @@ sealed interface QuestVisionCameraUiState {
         val review: Bitmap? = null,
         /** The photo under [review], for its AI analysis. */
         val reviewFile: File? = null,
+        /**
+         * [reviewFile]'s photo is gone but the AI already saw it: its stored answer is still shown, with
+         * no photo (and no discard).
+         */
+        val reviewPhotoMissing: Boolean = false,
+        /** The cleanup of pending captures awaiting the user's confirmation; null when none is asked. */
+        val pendingCleanup: PendingCleanup? = null,
+        /** How many pending captures the last cleanup removed. */
+        val cleanedCount: Int = 0,
         /** Stored captures, newest first, while the history is open; `null` when it is closed. */
         val history: List<CaptureEntry>? = null,
         val monitoring: MonitoringState = MonitoringState.IDLE,
@@ -95,7 +114,7 @@ sealed interface QuestVisionCameraUiState {
         val isCapturing: Boolean get() = pendingCapture != null
 
         /** History or review covers the viewfinder; camera controls are hidden meanwhile. */
-        val isOverlayOpen: Boolean get() = review != null || history != null
+        val isOverlayOpen: Boolean get() = review != null || reviewPhotoMissing || history != null
         val canCapture: Boolean
             get() = cameraStatus == CameraStatus.ACTIVE && !isCapturing && !isOverlayOpen
     }

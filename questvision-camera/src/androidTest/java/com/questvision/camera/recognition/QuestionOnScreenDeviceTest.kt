@@ -26,8 +26,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.questvision.camera.CaptureRepository
 import com.questvision.camera.ai.AssessmentIssue
+import com.questvision.camera.ai.ImageEncoding
 import com.questvision.camera.ai.JpegQuestionImageEncoder
-import com.questvision.camera.ai.RegionPolicy
 import com.questvision.camera.ai.assessQuestion
 import com.questvision.camera.ai.sameQuestion
 import com.questvision.camera.data.AnalysisMode
@@ -175,7 +175,7 @@ class QuestionOnScreenDeviceTest {
             val file = render("crop", untitled)
             val encoder = JpegQuestionImageEncoder(CaptureRepository(workDir), engine)
 
-            val image = encoder.encode(file, 2_048, RegionPolicy.QUESTION_ONLY)
+            val image = (encoder.encode(file, 2_048) as? ImageEncoding.Encoded)?.image
 
             assertNotNull(image)
             assertTrue(image!!.cropped)
@@ -192,7 +192,7 @@ class QuestionOnScreenDeviceTest {
             assertEquals(1_600, BitmapFactory.decodeFile(file.path).width)
         }
 
-    /** No question found: nothing goes automatically, while the user's explicit image mode still can. */
+    /** No question found: nothing goes, automatically or on request. */
     @Test
     fun withoutAQuestion_theAutomaticModeSendsNothing() =
         runBlocking {
@@ -200,8 +200,8 @@ class QuestionOnScreenDeviceTest {
             val encoder = JpegQuestionImageEncoder(CaptureRepository(workDir), engine)
 
             assertTrue(AssessmentIssue.NO_ALTERNATIVES in assessQuestion(engine.recognize(file)).issues)
-            assertNull(encoder.encode(file, 2_048, RegionPolicy.QUESTION_ONLY))
-            assertFalse(encoder.encode(file, 2_048, RegionPolicy.QUESTION_OR_WHOLE)!!.cropped)
+            // Nothing goes, not even on request: the whole photo is never sent.
+            assertEquals(ImageEncoding.QuestionNotFound, encoder.encode(file, 2_048))
         }
 
     /** An untitled question asked with a command ("Assinale…"), a table, and a browser bar on top. */
@@ -230,7 +230,7 @@ class QuestionOnScreenDeviceTest {
 
             assertTrue(assessment.issues.toString(), assessment.usable)
             assertTrue(assessment.visualContent)
-            val image = JpegQuestionImageEncoder(CaptureRepository(workDir), engine).encode(file, 2_048, RegionPolicy.QUESTION_ONLY)
+            val image = (JpegQuestionImageEncoder(CaptureRepository(workDir), engine).encode(file, 2_048) as? ImageEncoding.Encoded)?.image
             assertNotNull(image)
             val bytes = Base64.decode(image!!.dataUrl.substringAfter(","), Base64.DEFAULT)
             val read = plainText(engine.recognize(BitmapFactory.decodeByteArray(bytes, 0, bytes.size)))
@@ -288,7 +288,7 @@ class QuestionOnScreenDeviceTest {
                 assertEquals(file.name, 7, assessment.questionNumber)
                 assertEquals(file.name, listOf("A", "B", "C", "D"), assessment.alternatives.keys.toList())
 
-                val image = encoder.encode(file, 2_048, RegionPolicy.QUESTION_ONLY)
+                val image = (encoder.encode(file, 2_048) as? ImageEncoding.Encoded)?.image
                 assertNotNull(file.name, image)
                 val bytes = Base64.decode(image!!.dataUrl.substringAfter(","), Base64.DEFAULT)
                 val read = plainText(engine.recognize(BitmapFactory.decodeByteArray(bytes, 0, bytes.size)))

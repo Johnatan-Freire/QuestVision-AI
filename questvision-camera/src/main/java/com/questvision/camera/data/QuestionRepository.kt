@@ -42,10 +42,12 @@ data class ReconcileReport(
     val imported: Int = 0,
     /** Rows whose photo had moved (e.g. to `kept/`) and were repointed. */
     val repointed: Int = 0,
-    /** Rows whose photo no longer exists (e.g. a crash between deleting the file and the row). */
+    /** Rows whose photo no longer exists (e.g. a crash between deleting the file and the row), never one the AI saw. */
     val removed: Int = 0,
     /** Questions left PROCESSING by a crash, now FAILED (`INTERRUPTED`); never re-sent on their own. */
     val interrupted: Int = 0,
+    /** Rows the AI already saw whose photo is gone: kept with their answer and request log (photo missing). */
+    val keptWithoutPhoto: Int = 0,
 )
 
 /**
@@ -58,6 +60,39 @@ data class TokenUsage(
     val outputTokens: Int?,
     val reasoningTokens: Int?,
     val cacheWriteTokens: Int? = null,
+    /** Of [cacheWriteTokens], those with the 12-hour lifetime; null when OpenAI didn't break them down. */
+    val cacheWrite12hTokens: Int? = null,
+)
+
+/**
+ * What a manual cleanup of pending captures would remove: questions never sent to the AI (PENDING,
+ * no request logged) and not kept, with the space their photos take and their date range.
+ */
+data class PendingCleanup(
+    val ids: List<String>,
+    val bytes: Long,
+    val oldestAt: Long?,
+    val newestAt: Long?,
+) {
+    val count: Int get() = ids.size
+}
+
+/** How a discard ended; anything but [DELETED] is shown to the user. */
+enum class DeleteResult {
+    DELETED,
+
+    /** Refused: the AI is analyzing this question. */
+    IN_ANALYSIS,
+
+    /** The file could not be deleted; nothing was removed. */
+    FAILED,
+}
+
+/** The size of an image sent in image mode (never its content), for the request log. */
+data class SentImage(
+    val width: Int,
+    val height: Int,
+    val bytes: Int,
 )
 
 /** The window of the local request limit: it counts what was sent, so restarting the app resets nothing. */
@@ -190,6 +225,40 @@ class QuestionRepository internal constructor(
     /** Earlier questions with the same OCR fingerprint, across sessions (the future local answer cache). */
     suspend fun questionsLike(dedupKey: String): List<QuestionEntity> = serialized { dao.questionsWithDedupKey(dedupKey) }
 
+    /** The preview of a manual cleanup of pending captures (see [PendingCleanup]); removes nothing. */
+    suspend fun pendingCleanupPreview(): PendingCleanup =
+        serialized {
+            val rows = dao.questionsWithAiStatus(AiStatus.PENDING).filter { cleanable(it) }
+            PendingCleanup(
+                ids = rows.map { it.id },
+                bytes = rows.sumOf { captures.resolve(it.imagePath).length() },
+                oldestAt = rows.minOfOrNull { it.capturedAt },
+                newestAt = rows.maxOfOrNull { it.capturedAt },
+            )
+        }
+
+    /**
+     * Removes, after the user confirmed [preview], those of its questions that are still cleanable now
+     * (a question sent, kept or analyzed meanwhile is left alone): photo first, then the row. Returns
+     * how many were removed.
+     */
+    suspend fun deletePending(preview: PendingCleanup): Int =
+        serialized {
+            var removed = 0
+            for (id in preview.ids) {
+                val row = dao.question(id) ?: continue
+                if (row.aiStatus != AiStatus.PENDING || !cleanable(row)) continue
+                if (!captures.delete(captures.resolve(row.imagePath))) continue
+                dao.deleteQuestion(id)
+                removed++
+            }
+            removed
+        }
+
+    // Never sent (no request logged for it) and not preserved by the user.
+    private suspend fun cleanable(row: QuestionEntity): Boolean =
+        !row.imagePath.startsWith("kept/") && requests.requestsFor(row.id).isEmpty()
+
     /** Questions the AI has seen or is seeing (any status but NOT_REQUESTED and PENDING), oldest first. */
     suspend fun questionsSentToAi(): List<QuestionEntity> =
         serialized {
@@ -214,6 +283,7 @@ class QuestionRepository internal constructor(
         model: String,
         mode: AnalysisMode,
         maxRequests: Int,
+        image: SentImage? = null,
     ): AiRequestStart =
         serialized {
             // Attempts left in flight by an earlier process are closed first, never after a claim.
@@ -231,7 +301,17 @@ class QuestionRepository internal constructor(
 
                     else -> {
                         AiRequestStart.Started(
-                            requests.insert(AiRequestEntity(questionId = questionId, model = model, mode = mode, startedAt = now)),
+                            requests.insert(
+                                AiRequestEntity(
+                                    questionId = questionId,
+                                    model = model,
+                                    mode = mode,
+                                    startedAt = now,
+                                    imageWidth = image?.width,
+                                    imageHeight = image?.height,
+                                    imageBytes = image?.bytes,
+                                ),
+                            ),
                         )
                     }
                 }
@@ -268,6 +348,7 @@ class QuestionRepository internal constructor(
                 usage?.outputTokens,
                 usage?.reasoningTokens,
                 usage?.cacheWriteTokens,
+                usage?.cacheWrite12hTokens,
                 serviceTier,
             )
         }
@@ -303,6 +384,7 @@ class QuestionRepository internal constructor(
                     usage?.outputTokens,
                     usage?.reasoningTokens,
                     usage?.cacheWriteTokens,
+                    usage?.cacheWrite12hTokens,
                     serviceTier,
                 )
             }
@@ -326,15 +408,16 @@ class QuestionRepository internal constructor(
 
     /**
      * Deletes a photo and its row: file first, so an interruption leaves only a dangling row. Refused
-     * (false) while the AI is processing it: the answer, possibly billed, would have nowhere to go.
+     * while the AI is processing it (the answer, possibly billed, would have nowhere to go); when the
+     * file can't be deleted, the row is kept too, so nothing is half-removed.
      */
-    suspend fun delete(file: File): Boolean =
+    suspend fun delete(file: File): DeleteResult =
         serialized {
             val row = dao.questionByImagePath(captures.relativePath(file))
-            if (row?.aiStatus == AiStatus.PROCESSING) return@serialized false
-            captures.delete(file)
+            if (row?.aiStatus == AiStatus.PROCESSING) return@serialized DeleteResult.IN_ANALYSIS
+            if (!captures.delete(file)) return@serialized DeleteResult.FAILED
             row?.let { dao.deleteQuestion(it.id) }
-            true
+            DeleteResult.DELETED
         }
 
     /**
@@ -385,6 +468,7 @@ class QuestionRepository internal constructor(
             val byName = files.groupBy { it.name }
             var repointed = 0
             var removed = 0
+            var keptWithoutPhoto = 0
             val referenced = HashSet<String>()
             for (ref in dao.imageRefs()) {
                 if (ref.imagePath in byPath) {
@@ -396,6 +480,14 @@ class QuestionRepository internal constructor(
                     dao.updateImagePath(ref.id, moved, clock())
                     referenced += moved
                     repointed++
+                } else if (dao
+                        .question(
+                            ref.id,
+                        )?.let { (it.aiStatus.keepsPhoto && it.aiStatus != AiStatus.PENDING) || it.aiResponse != null } ==
+                    true
+                ) {
+                    // An answer (possibly paid for) outlives its photo: never removed automatically.
+                    keptWithoutPhoto++
                 } else {
                     dao.deleteQuestion(ref.id)
                     removed++
@@ -425,7 +517,7 @@ class QuestionRepository internal constructor(
                 }
                 imported++
             }
-            ReconcileReport(imported, repointed, removed, interrupted)
+            ReconcileReport(imported, repointed, removed, interrupted, keptWithoutPhoto)
         }
 
     private fun toEntry(question: QuestionEntity): CaptureEntry =

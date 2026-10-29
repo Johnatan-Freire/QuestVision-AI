@@ -23,6 +23,7 @@ import com.questvision.camera.ai.AutoAnalysisCoordinator
 import com.questvision.camera.ai.QuestionAssessment
 import com.questvision.camera.ai.assessQuestion
 import com.questvision.camera.data.AiStatus
+import com.questvision.camera.data.DeleteResult
 import com.questvision.camera.data.QuestionEntity
 import com.questvision.camera.data.QuestionRepository
 import com.questvision.camera.data.plainText
@@ -210,7 +211,7 @@ class QuestVisionCameraViewModel
         fun closeReview() {
             reviewJob?.cancel()
             reviewFile = null
-            updatePreviewing { it.copy(review = null, reviewFile = null) }
+            updatePreviewing { it.copy(review = null, reviewFile = null, reviewPhotoMissing = false) }
         }
 
         /** Preserves the capture under review (exempt from retention) and closes the review. */
@@ -230,7 +231,35 @@ class QuestVisionCameraViewModel
             closeReview()
             if (file == null) return
             viewModelScope.launch {
-                questionRepository.delete(file)
+                when (questionRepository.delete(file)) {
+                    DeleteResult.DELETED -> Unit
+                    DeleteResult.IN_ANALYSIS -> notify(Notice.DISCARD_REFUSED)
+                    DeleteResult.FAILED -> notify(Notice.DISCARD_FAILED)
+                }
+                refreshHistory()
+            }
+        }
+
+        /** Shows what a cleanup of pending captures would remove; nothing is removed yet. */
+        fun requestPendingCleanup() {
+            viewModelScope.launch {
+                val preview = questionRepository.pendingCleanupPreview()
+                updatePreviewing { it.copy(pendingCleanup = preview) }
+            }
+        }
+
+        fun cancelPendingCleanup() {
+            updatePreviewing { it.copy(pendingCleanup = null) }
+        }
+
+        /** Removes the previewed pending captures that are still cleanable (see QuestionRepository.deletePending). */
+        fun confirmPendingCleanup() {
+            val preview = (_uiState.value as? QuestVisionCameraUiState.Previewing)?.pendingCleanup ?: return
+            updatePreviewing { it.copy(pendingCleanup = null) }
+            if (preview.count == 0) return
+            viewModelScope.launch {
+                val removed = questionRepository.deletePending(preview)
+                updatePreviewing { it.copy(cleanedCount = removed, notice = Notice.PENDING_CLEANED) }
                 refreshHistory()
             }
         }
@@ -523,7 +552,16 @@ class QuestVisionCameraViewModel
                     val bitmap = captureRepository.loadForReview(file)
                     if (bitmap != null) {
                         reviewFile = file
-                        updatePreviewing { it.copy(review = bitmap, reviewFile = file) }
+                        updatePreviewing { it.copy(review = bitmap, reviewFile = file, reviewPhotoMissing = false) }
+                    } else if (questionRepository.question(file)?.let {
+                            it.aiStatus != AiStatus.NOT_REQUESTED &&
+                                it.aiStatus != AiStatus.PENDING
+                        } ==
+                        true
+                    ) {
+                        // The photo is gone but the AI saw it: its answer is still there to read.
+                        reviewFile = file
+                        updatePreviewing { it.copy(review = null, reviewFile = file, reviewPhotoMissing = true) }
                     } else {
                         // The file vanished (e.g. pruned) or is unreadable: show what remains.
                         refreshHistory()

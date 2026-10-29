@@ -84,4 +84,48 @@ class QuestVisionMigrationTest {
             context.deleteDatabase(dbName)
         }
     }
+
+    /** Phase 3.5: version 2 to 3 adds nullable columns to `ai_requests`; every row stays as it was. */
+    @Test
+    fun version2To3_keepsAllData_andTheRequestLog() {
+        helper.createDatabase(dbName, 2).apply {
+            execSQL("INSERT INTO capture_sessions (id, started_at, ended_at) VALUES ('20261029-025608', 100, 200)")
+            execSQL(
+                "INSERT INTO questions (id, session_id, sequence, question_number, origin, image_path, captured_at, ocr_text, " +
+                    "dedup_key, ai_status, ai_response, ai_model, ai_answered_at, attempts, last_error, telegram_status, updated_at) " +
+                    "VALUES ('q7', '20261029-025608', 7, 12, 'AUTOMATIC', 'capture_7.jpg', 150, 'Questão 12', " +
+                    "NULL, 'ANSWERED', '{\"answer\":[\"D\"]}', 'gpt-6-luna', 160, 1, NULL, 'NOT_REQUESTED', 160)",
+            )
+            execSQL(
+                "INSERT INTO ai_requests (id, question_id, model, mode, started_at, finished_at, outcome, error_code, http_status, " +
+                    "response_id, input_tokens, cached_tokens, output_tokens, reasoning_tokens, cache_write_tokens, service_tier) " +
+                    "VALUES (2, 'q7', 'gpt-6-luna', 'IMAGE', 1793254530992, 1793254534440, 'SUCCEEDED', NULL, 200, " +
+                    "'resp_00bb', 1486, 0, 56, 0, 1483, 'default')",
+            )
+            close()
+        }
+
+        helper.runMigrationsAndValidate(dbName, 3, true).close()
+
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val database = Room.databaseBuilder(context, QuestVisionDatabase::class.java, dbName).build()
+        try {
+            runBlocking {
+                val q7 = database.questionDao().question("q7")!!
+                assertEquals(AiStatus.ANSWERED, q7.aiStatus)
+                assertEquals("{\"answer\":[\"D\"]}", q7.aiResponse)
+                val log = database.aiRequestDao().all().single()
+                assertEquals(1486, log.inputTokens)
+                assertEquals(1483, log.cacheWriteTokens)
+                assertEquals("default", log.serviceTier)
+                assertEquals(AiRequestOutcome.SUCCEEDED, log.outcome)
+                assertNull(log.cacheWrite12hTokens)
+                assertNull(log.imageWidth)
+                assertNull(log.imageBytes)
+            }
+        } finally {
+            database.close()
+            context.deleteDatabase(dbName)
+        }
+    }
 }

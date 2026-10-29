@@ -2126,6 +2126,185 @@ para baixo). Registros temporários com timeout de 20 min, só métricas.
   - 2 repetidas descartadas;
   - **0 falsos positivos, 0 falsos negativos.**
 
+## 3m. Fase 3.5: primeira chamada real com imagem (2026-10-29)
+
+**Autorização:** uma única chamada manual com imagem, executada por toques via ADB no M52, com a
+trava do envio automático ligada. A confirmação dos controles de gasto no painel da OpenAI foi do
+usuário; o agente não tem acesso ao painel.
+
+**Preparação:**
+
+- Push de `31b4f76` para `questvision/fase-1` (a `main` continua em `2f10e46`).
+- Chave só cifrada (`openai_api_key.bin`, 194 bytes).
+- Nenhum retry no código (corpo de tamanho fixo, sem seguir redirecionamentos; tempo limite de 15 s
+  para conectar e 90 s para ler).
+- O recorte das 5 capturas da sessão 2 foi conferido com o mesmo código, em cópias temporárias
+  (removidas depois, arquivo por arquivo). A Questão 12 deu um recorte de 1165×737 só com a questão.
+
+**A chamada:**
+
+| Item | Valor |
+| --- | --- |
+| Questão | AUTO Nº 7, sessão 20261029-025608 (Questão 12, padrão Singleton) |
+| Toque em "Analisar" | 03:15:28,98 (um único toque) |
+| Início / fim (`ai_requests`) | 03:15:30,99 / 03:15:34,44: **3,45 s** |
+| Modelo / nível | `gpt-6-luna` / `default` |
+| HTTP / resultado | 200 / `SUCCEEDED` |
+| `response_id` | `resp_00bb357e783a4436016ae2e484e65087d2a4cb2a4f66df77b5` |
+| Tokens | entrada 1.486 (0 em cache, **1.483 gravados no cache**), saída 56, raciocínio 0 |
+| Imagem enviada | recorte da questão, 1165×737 (medido no diagnóstico com o mesmo código e a mesma foto) |
+| Resposta | **D** (Singleton), confiança "alta", sem revisão: **correta** |
+| Custo estimado antes do envio | ≈ US$ 0,0008, **sem a imagem** (aviso exibido) |
+| Custo observado (local) | (3 × 0,10 + 1.483 × 0,125 + 56 × 0,50) / 10⁶ ≈ **US$ 0,00021** (o app mostra US$ 0,0002) |
+
+- **Tokens da imagem:** a chamada de texto de 28/10 teve 461 tokens de entrada (enunciado completo
+  em texto). Por diferença, a imagem recortada respondeu por **cerca de 1.100 a 1.200 tokens** de
+  entrada. É uma estimativa por subtração, não uma contagem oficial.
+- **Cache:** quase toda a entrada foi gravada no cache de prompt (`cache_write_tokens`). Pela
+  tabela, a escrita custa 1,25× a entrada, e o app a contabiliza assim. Conferir no painel se a
+  cobrança bate.
+- **Duplicidade:** uma única linha em `ai_requests` para a questão, `attempts` = 1, uma única linha
+  `QuestVisionAi` no Logcat. Nenhum reenvio. O contador de 24 h foi para 2 de 10.
+- **Logcat** (16.033 linhas de todo o aparelho durante o teste): nenhuma ocorrência de `sk-`,
+  `Bearer`, `Authorization`, trechos do enunciado ou da resposta, `base64` ou `/9j/`.
+- **Integridade:** 50 questões, 4 sessões, banco íntegro; todas as outras questões idênticas a antes;
+  as 50 fotos e a chave com o mesmo MD5. A questão analisada virou `ANSWERED`, protegida da retenção.
+- **Testes reais interrompidos** depois desta chamada.
+
+**A conferir pelo usuário no painel da OpenAI:** o uso de 2026-10-29 por volta de 03:15 (horário de
+Brasília): 1 requisição de `gpt-6-luna`, cerca de 1.486 tokens de entrada (1.483 em escrita de cache) e
+56 de saída, custo da ordem de US$ 0,0002.
+
+### Fase 3.5: correções técnicas (2026-10-29, sem chamadas reais, não commitadas)
+
+**Críticas:**
+
+1. **Recorte obrigatório em todo envio com imagem.**
+   - `QuestionImageEncoder.encode` devolve `ImageEncoding`: `Encoded`, `Unreadable` ou
+     `QuestionNotFound`.
+   - A opção "foto inteira" (`RegionPolicy.QUESTION_OR_WHOLE`) foi **removida**: sem a questão
+     localizada, o "Analisar" manual também é bloqueado (`QUESTION_REGION_NOT_FOUND`, mensagem "A área
+     da questão não foi encontrada na foto; nada foi enviado").
+2. **Confirmação em cada envio manual.** Depois da primeira chamada (que tem o aviso mais completo),
+   todo envio pede `Confirmation.SEND`, com:
+   - modelo e modo;
+   - aviso de consumo de créditos;
+   - estimativa, que no modo imagem avisa que a imagem não entra nela e que só o recorte é enviado.
+
+   Reenvio após resultado desconhecido continua pedindo uma segunda confirmação.
+3. **Respostas tardias.** Depois que a resposta chega, gravá-la roda em `NonCancellable`: um
+   "Cancelar" nesse instante não perde mais uma resposta possivelmente paga (antes, ela virava
+   `CANCELLED`).
+   - Tempos limite (15 s para conectar, 90 s para ler, limite total por chamada), cancelamento que
+     fecha o socket e uma requisição por vez no app continuam como antes.
+4. **Sem retry; resultado desconhecido explícito.** Novo `AiRequestOutcome.UNKNOWN`, usado quando
+   nenhuma resposta chegou (rede, tempo esgotado, erro inesperado ao gravar). Antes eram `FAILED`, o
+   que sugeria "não cobrado". Nenhum retry automático existe.
+
+**Planejadas:**
+
+5. **Resposta sem foto.**
+   - `reconcile()` não apaga mais a linha de uma questão que passou pela IA quando a foto some
+     (`ReconcileReport.keptWithoutPhoto`). Pendente nunca enviada sem foto continua sendo removida.
+   - Na revisão, uma tela "foto não encontrada" permite abrir a resposta salva pelo botão da IA, sem
+     "Descartar".
+6. **Aviso de descarte.** `delete()` devolve `DeleteResult`: `DELETED`, `IN_ANALYSIS` (aviso
+   "Não descartada: a IA está analisando esta questão…") ou `FAILED` (o arquivo não pôde ser apagado;
+   nada removido, aviso).
+7. **Limpeza manual de pendentes.** Botão "Limpar pendentes" no histórico:
+   - **Prévia:** quantidade, MB e período.
+   - **Confirmação:** "Apagar N".
+   - **Alcance:** só capturas `PENDING`, nunca enviadas (sem registro em `ai_requests`) e não
+     mantidas. Respondidas, em análise, com falha, já enviadas e mantidas nunca entram.
+   - **Na confirmação,** cada questão é verificada de novo: uma enviada ou mantida depois da prévia
+     fica.
+8. **Telemetria do ML Kit:** sem mudança de comportamento; ver "Telemetria observada" (3l). Não há
+   opção oficial para desligar. Opções documentadas: aviso ao usuário e tirar os samples do APK.
+9. **Tamanho do recorte enviado.** `ai_requests` ganhou `image_width`, `image_height` e
+   `image_bytes`. A linha `QuestVisionAi` do Logcat ganhou `image=LxA/NB` e `cacheWrite12h`. Nunca o
+   conteúdo.
+
+**Banco versão 3** (migração automática 2→3, só colunas novas e anuláveis em `ai_requests`):
+
+- `cache_write_12h_tokens`, `image_width`, `image_height` e `image_bytes`.
+- **Por quê:** o custo correto das escritas de cache de 12 h e a auditoria do tamanho enviado.
+- **Testes:** `QuestVisionMigrationTest.version2To3_keepsAllData_andTheRequestLog` (no aparelho,
+  pendente); o esquema `3.json` foi exportado.
+
+**Auditoria de custo (10–12):**
+
+- Pela tabela oficial (página de preços e guia de cache de prompt, consultados em 2026-10-29), no
+  `gpt-6-luna` Standard:
+  - entrada US$ 0,10/M; entrada em cache US$ 0,01/M; saída US$ 0,50/M;
+  - escrita de cache de **30 min** US$ 0,125/M (1,25× a entrada); de **12 h** US$ 0,25/M (2,5×).
+- Os tokens gravados fazem parte de `input_tokens`; a entrada comum é `input − cached −
+  cache_write`. Sem pedir retenção, o padrão no GPT-6 é 30 min (o app não pede 12 h).
+- **Os 1.483 tokens gravados** custam 1.483 × 0,125 / 10⁶ = US$ 0,000185. Total da chamada:
+  (3 × 0,10 + 1.483 × 0,125 + 56 × 0,50) / 10⁶ = **US$ 0,000213675**, igual ao que o app calculou.
+- **Correção:** o app passou a ler `cache_write_tokens_details.ttl_12h_tokens` e a cobrar essa
+  parte a 2,5×. Antes, uma escrita de 12 h seria subestimada.
+- **A diferença de ~1.025 tokens** entre a chamada de imagem (1.486) e a de texto (461) **não é
+  contagem oficial** de tokens da imagem: as duas mensagens diferem também no texto enviado.
+- **Conciliação com o painel de uso da OpenAI: pendente de confirmação do usuário.**
+
+**Testes:**
+
+- **JVM: 264/264** ✅ (eram 251). Novos:
+  - recorte obrigatório no manual;
+  - cancelamento depois da resposta;
+  - `UNKNOWN` em perda de conexão;
+  - tamanho do recorte registrado;
+  - custo da primeira chamada de imagem;
+  - escrita de 12 h;
+  - leitura do detalhamento por retenção;
+  - confirmação em cada envio;
+  - resposta mantida sem foto;
+  - limpeza com prévia e nova verificação;
+  - aviso de descarte recusado;
+  - revisão sem foto.
+- **Build:** `:app:assembleDebug` ✅, `:questvision-camera:assembleDebugAndroidTest` ✅, `spotlessApply`.
+- **Instrumentados:** atualizados (recorte obrigatório com OCR real, tamanho do recorte em SQLite
+  real, migração 2→3), **não executados**: o M52 não estava conectado.
+- **Dados do M52:** não verificados nesta rodada. A instalação desta versão migra o banco real
+  2→3; fazer backup antes.
+
+### Fase 3.5: validação no M52 (2026-10-29)
+
+- **Backup novo, somente leitura:** `~/QuestVision-backups/2026-10-29-antes-da-migracao-v3/`
+  (187 MB): banco v2, configurações e 50 fotos com MD5 conferido. Estado de antes: 50 questões, 4
+  sessões, 2 registros em `ai_requests`, 50 fotos e a chave.
+- **Instrumentados: 35/35** ✅ (sem `RealCapturesOcrTest`). Na primeira execução, 34/35: um teste do
+  aparelho ainda esperava `FAILED` em vez de `UNKNOWN` para falha de rede (corrigido; o código estava
+  certo). Inclui:
+  - **migração 2→3** (`version2To3_keepsAllData_andTheRequestLog`);
+  - **recorte obrigatório com OCR real** (foto sem questão ⇒ nada enviado, nem no manual);
+  - **tamanho do recorte gravado em SQLite real.**
+- **Atualização por cima com migração real 2→3:**
+  - `user_version` = 3 e `identity_hash` igual ao de `3.json`; `integrity_check` ok;
+  - questões e sessões idênticas byte a byte ao backup;
+  - as colunas originais de `ai_requests` idênticas; as novas vazias (`NULL`);
+  - 50 fotos e chave com o mesmo MD5; configurações iguais;
+  - reconciliação sem remoções (`keptWithoutPhoto=0`); nenhum `sk-` no Logcat.
+- **Validação visual** (antes de cada toque, conferidos app em primeiro plano, ausência de chamada e
+  de janela flutuante; um primeiro intento foi interrompido sem toque porque havia uma ligação ativa,
+  um app bancário em primeiro plano e uma janela flutuante de vídeo):
+  1. **Prévia de "Limpar pendentes":** "27 capturas pendentes, nunca enviadas à IA (113,8 MB, de
+     26/10/2026 14:37 a 29/10/2026 02:57)…", com "Apagar 27" e "Cancelar". Das 28 `PENDING`, a única
+     mantida (`kept/`) ficou de fora. Tocado **Cancelar**: nada apagado.
+  2. **Confirmação da Questão 12 em modo imagem:** "Enviar esta questão à OpenAI (gpt-6-luna,
+     Imagem)? Consome créditos da sua conta: até cerca de US$ 0,0008 por envio (aproximado, não é um
+     teto). Mais a imagem, que não entra na estimativa. Só o recorte da questão é enviado." Tocado
+     **Agora não**: nenhuma requisição (nenhuma linha `QuestVisionAi`).
+     - **Defeito visual encontrado e corrigido:** faltava o espaço antes de "Mais a imagem" (o Android
+       remove o espaço inicial de um recurso de texto; agora ele vai entre aspas). A versão corrigida
+       foi instalada e a confirmação conferida de novo.
+  3. **Tela de foto ausente:** não exibida, porque exigiria remover ou mover uma foto real. Coberta
+     pelo teste JVM `anAnsweredQuestionWithoutItsPhoto_stillOpens`.
+  4. **Integridade final** (depois de duas instalações por cima):
+     - banco v3, `integrity_check` ok;
+     - 50 questões, 4 sessões e 2 registros em `ai_requests` idênticos byte a byte ao backup;
+     - 50 fotos e a chave com o mesmo MD5; configurações iguais; nenhum `sk-` no Logcat.
+
 ## 4. Funcionalidades implementadas
 
 - Identidade QuestVision AI (nome do app, `applicationId` `com.questvision.ai`, título na tela).

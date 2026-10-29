@@ -649,4 +649,66 @@ class QuestVisionCameraViewModelTest {
         assertEquals(AiStatus.ANSWERED, dao.questions.single { it.imagePath == file.name }.aiStatus)
         assertTrue(restarted.state.history!!.any { it.file == file })
     }
+
+    // Phase 3.5, item 6: a discard that can't be done says so.
+    @Test
+    fun discardingDuringAnAnalysis_isRefused_withANotice() {
+        val viewModel = newViewModel()
+        viewModel.startMonitoring()
+        val file = viewModel.showUntilCaptureRequested(seed = 1)
+        viewModel.cameraSaves(file)
+        val row = dao.questions.single()
+        kotlinx.coroutines.runBlocking { dao.claimForAi(row.id, 1L) }
+
+        viewModel.openCapture(file)
+        viewModel.discardReviewedCapture()
+
+        assertEquals(Notice.DISCARD_REFUSED, viewModel.state.notice)
+        assertTrue(file.exists())
+        assertEquals(1, dao.questions.size)
+    }
+
+    // Phase 3.5, item 5: the stored answer of a question whose photo is gone can still be opened.
+    @Test
+    fun anAnsweredQuestionWithoutItsPhoto_stillOpens() {
+        val viewModel = newViewModel()
+        viewModel.startMonitoring()
+        val file = viewModel.showUntilCaptureRequested(seed = 1)
+        viewModel.cameraSaves(file)
+        val row = dao.questions.single()
+        kotlinx.coroutines.runBlocking { dao.saveAiResult(row.id, AiStatus.ANSWERED, "{}", "gpt-6-luna", 1L) }
+        file.delete()
+
+        val restarted = newViewModel()
+        restarted.openHistory()
+        restarted.openCapture(file)
+
+        assertEquals(1, dao.questions.size)
+        assertTrue(restarted.state.reviewPhotoMissing)
+        assertEquals(file, restarted.state.reviewFile)
+        assertTrue(restarted.state.isOverlayOpen)
+    }
+
+    // Phase 3.5, item 7: preview, then confirm; cancelling removes nothing.
+    @Test
+    fun theManualCleanup_showsAPreview_andRemovesOnlyAfterConfirmation() {
+        val viewModel = newViewModel()
+        viewModel.startMonitoring()
+        val first = viewModel.showUntilCaptureRequested(seed = 1).also { viewModel.cameraSaves(it) }
+        val second = viewModel.showUntilCaptureRequested(seed = 2).also { viewModel.cameraSaves(it) }
+
+        viewModel.requestPendingCleanup()
+        assertEquals(2, viewModel.state.pendingCleanup!!.count)
+        viewModel.cancelPendingCleanup()
+        assertNull(viewModel.state.pendingCleanup)
+        assertEquals(2, dao.questions.size)
+
+        viewModel.requestPendingCleanup()
+        viewModel.confirmPendingCleanup()
+
+        assertEquals(Notice.PENDING_CLEANED, viewModel.state.notice)
+        assertEquals(2, viewModel.state.cleanedCount)
+        assertTrue(dao.questions.isEmpty())
+        assertFalse(first.exists() || second.exists())
+    }
 }

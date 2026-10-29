@@ -22,8 +22,11 @@ import com.questvision.camera.settings.AiModel
 /** Rough characters per token for Portuguese text: an approximation, not a tokenizer. */
 private const val CHARS_PER_TOKEN = 3
 
-/** Cache writes are billed at 1.25x the uncached input rate (OpenAI pricing page, 2026-10-28). */
+/** A 30-minute cache write (the default) costs 1.25× the uncached input rate (pricing page and prompt caching guide, checked 2026-10-29). */
 private const val CACHE_WRITE_MULTIPLIER = 1.25
+
+/** A 12-hour cache write costs 2.5× the uncached input rate (OpenAI prompt caching guide, GPT-6). */
+private const val CACHE_WRITE_12H_MULTIPLIER = 2.5
 
 /**
  * Price multiplier of the `service_tier` that served a request, over the Standard prices in [AiModel]
@@ -90,11 +93,14 @@ fun observedCostUsd(
     if (model == null) return null
     val cached = usage.cachedTokens ?: 0
     val written = usage.cacheWriteTokens ?: 0
+    // Without a breakdown every write has the default 30-minute lifetime (the app never asks for 12 h).
+    val written12h = (usage.cacheWrite12hTokens ?: 0).coerceIn(0, written)
     val plain = (input - cached - written).coerceAtLeast(0)
     val usd =
         plain * model.inputPerMillion +
             cached * model.cachedInputPerMillion +
-            written * model.inputPerMillion * CACHE_WRITE_MULTIPLIER +
+            (written - written12h) * model.inputPerMillion * CACHE_WRITE_MULTIPLIER +
+            written12h * model.inputPerMillion * CACHE_WRITE_12H_MULTIPLIER +
             output * model.outputPerMillion
     return usd * multiplier / 1_000_000.0
 }

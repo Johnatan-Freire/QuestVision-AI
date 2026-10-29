@@ -312,7 +312,6 @@ class AutoAnalysisCoordinatorTest {
 
             auto.submit(q, asImage)
 
-            assertEquals(listOf(RegionPolicy.QUESTION_ONLY), images.regions)
             assertEquals(0, client.calls)
             assertEquals(AiStatus.PENDING, status(q))
             assertEquals(0, requests.rows.size)

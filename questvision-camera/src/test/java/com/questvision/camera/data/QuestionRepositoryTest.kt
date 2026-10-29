@@ -249,14 +249,75 @@ class QuestionRepositoryTest {
             val stored = recordAuto(file, question = 1, sequence = 1)
             dao.claimForAi(stored.id, 11_000L)
 
-            assertFalse(repository.delete(file))
+            assertEquals(DeleteResult.IN_ANALYSIS, repository.delete(file))
             assertTrue(file.exists())
             assertEquals(AiStatus.PROCESSING, dao.question(stored.id)!!.aiStatus)
 
             dao.saveAiResult(stored.id, AiStatus.ANSWERED, "{}", "gpt-6-luna", 12_000L)
-            assertTrue(repository.delete(file))
+            assertEquals(DeleteResult.DELETED, repository.delete(file))
             assertFalse(file.exists())
             assertNull(dao.question(stored.id))
+        }
+
+    // Phase 3.5, item 5: an answer (possibly paid for) outlives its photo.
+    @Test
+    fun anAnsweredQuestionWhosePhotoIsGone_keepsItsRowAndAnswer() =
+        runTest(dispatcher) {
+            val answered = recordAuto(photo(sequence = 1, timeMs = 10_000L), question = 1, sequence = 1)
+            dao.saveAiResult(answered.id, AiStatus.ANSWERED, "{\"answer\":[\"D\"]}", "gpt-6-luna", 11_000L)
+            val pendingFile = photo(sequence = 2, timeMs = 12_000L)
+            val pending = recordAuto(pendingFile, question = 2, sequence = 2)
+            captures.resolve(answered.imagePath).delete()
+            pendingFile.delete()
+
+            val report = newRepository().reconcile()
+
+            assertEquals(1, report.keptWithoutPhoto)
+            assertEquals(1, report.removed)
+            assertEquals("{\"answer\":[\"D\"]}", dao.question(answered.id)!!.aiResponse)
+            // A pending question that never reached the AI has nothing to keep.
+            assertNull(dao.question(pending.id))
+        }
+
+    // Phase 3.5, item 7: the manual cleanup removes only pending captures never sent, after a preview.
+    @Test
+    fun theManualCleanup_removesOnlyPendingCapturesNeverSent() =
+        runTest(dispatcher) {
+            val pending = recordAuto(photo(sequence = 1, timeMs = 10_000L), question = 1, sequence = 1)
+            val keptFile = photo(sequence = 2, timeMs = 11_000L)
+            recordAuto(keptFile, question = 2, sequence = 2)
+            repository.preserve(keptFile)
+            val answered = recordAuto(photo(sequence = 3, timeMs = 12_000L), question = 3, sequence = 3)
+            dao.saveAiResult(answered.id, AiStatus.ANSWERED, "{}", "gpt-6-luna", 13_000L)
+            val manual = photo(sequence = null, timeMs = 14_000L).also { recordManual(it) }
+            val failedBefore = recordAuto(photo(sequence = 4, timeMs = 15_000L), question = 1, sequence = 4)
+            requests.insert(AiRequestEntity(questionId = failedBefore.id, model = "gpt-6-luna", mode = AnalysisMode.TEXT, startedAt = 1L))
+
+            val preview = repository.pendingCleanupPreview()
+
+            assertEquals(listOf(pending.id), preview.ids)
+            assertEquals(3L, preview.bytes)
+            assertEquals(5, dao.questions.size)
+
+            val removed = repository.deletePending(preview)
+
+            assertEquals(1, removed)
+            assertNull(dao.question(pending.id))
+            assertFalse(captures.resolve(pending.imagePath).exists())
+            assertEquals(4, dao.questions.size)
+            assertTrue(manual.exists())
+        }
+
+    @Test
+    fun theCleanup_rechecksEachQuestion_whenConfirmed() =
+        runTest(dispatcher) {
+            val q = recordAuto(photo(sequence = 1, timeMs = 10_000L), question = 1, sequence = 1)
+            val preview = repository.pendingCleanupPreview()
+            // Between the preview and the confirmation, the question was sent to the AI.
+            dao.claimForAi(q.id, 11_000L)
+
+            assertEquals(0, repository.deletePending(preview))
+            assertTrue(captures.resolve(q.imagePath).exists())
         }
 
     @Test

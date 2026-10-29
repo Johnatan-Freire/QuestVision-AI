@@ -79,8 +79,11 @@ data class AiAnalysisUiState(
 }
 
 enum class Confirmation {
-    /** The very first real request (model, mode, estimate), asked once. */
+    /** The very first real request (model, mode, estimate), with the advice on spend limits. */
     FIRST_CALL,
+
+    /** Every later manual request: model, mode, estimate and the warning that it uses credits. */
+    SEND,
 
     /** The last request for this question ended without an answer and may have been billed. */
     RESEND_UNKNOWN_OUTCOME,
@@ -167,12 +170,12 @@ class AiAnalysisViewModel
             _uiState.update { it.copy(confirming = null) }
         }
 
+        /** Every manual request is confirmed (the first one with more advice), then a resend after an unknown outcome. */
         private fun nextConfirmation(after: Confirmation?): Confirmation? {
             val state = _uiState.value
-            val firstCallNeeded = after == null && !settingsStore.load().firstCallConfirmed
             val resendNeeded = state.status == AiStatus.FAILED && state.lastError?.outcomeUnknown == true
             return when {
-                firstCallNeeded -> Confirmation.FIRST_CALL
+                after == null -> if (settingsStore.load().firstCallConfirmed) Confirmation.SEND else Confirmation.FIRST_CALL
                 resendNeeded && after != Confirmation.RESEND_UNKNOWN_OUTCOME -> Confirmation.RESEND_UNKNOWN_OUTCOME
                 else -> null
             }

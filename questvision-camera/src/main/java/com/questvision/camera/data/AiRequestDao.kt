@@ -29,7 +29,8 @@ interface AiRequestDao {
         "UPDATE ai_requests SET outcome = :outcome, finished_at = :finishedAt, error_code = :errorCode, " +
             "http_status = :httpStatus, response_id = :responseId, input_tokens = :inputTokens, " +
             "cached_tokens = :cachedTokens, output_tokens = :outputTokens, reasoning_tokens = :reasoningTokens, " +
-            "cache_write_tokens = :cacheWriteTokens, service_tier = :serviceTier WHERE id = :id",
+            "cache_write_tokens = :cacheWriteTokens, cache_write_12h_tokens = :cacheWrite12hTokens, " +
+            "service_tier = :serviceTier WHERE id = :id",
     )
     suspend fun finish(
         id: Long,
@@ -43,6 +44,7 @@ interface AiRequestDao {
         outputTokens: Int?,
         reasoningTokens: Int?,
         cacheWriteTokens: Int?,
+        cacheWrite12hTokens: Int?,
         serviceTier: String?,
     ): Int
 

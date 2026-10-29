@@ -21,8 +21,8 @@ import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.questvision.camera.CaptureRepository
+import com.questvision.camera.ai.ImageEncoding
 import com.questvision.camera.ai.JpegQuestionImageEncoder
-import com.questvision.camera.ai.RegionPolicy
 import com.questvision.camera.ai.assessQuestion
 import com.questvision.camera.ai.questionLinesDiagnostics
 import com.questvision.camera.ai.questionRegion
@@ -74,7 +74,7 @@ class FieldCapturesAssessmentTest {
                 val a = assessQuestion(text)
                 val region = questionRegion(text)
                 // What the automatic image mode would send, read back: count outside items in it.
-                val sent = encoder.encode(photo, 2_048, RegionPolicy.QUESTION_ONLY)
+                val sent = (encoder.encode(photo, 2_048) as? ImageEncoding.Encoded)?.image
                 val leaks =
                     sent?.let {
                         val bytes = Base64.decode(it.dataUrl.substringAfter(","), Base64.DEFAULT)

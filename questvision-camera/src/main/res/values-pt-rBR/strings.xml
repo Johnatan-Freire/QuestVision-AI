@@ -168,4 +168,26 @@
     <string name="questvision_ai_reject_region">A área da questão não foi encontrada na foto; nada foi enviado</string>
     <string name="questvision_storage_low">Pouco espaço livre: monitoramento pausado para nenhuma captura falhar</string>
     <string name="questvision_ai_reject_busy">Outra questão está sendo analisada; tente quando ela terminar</string>
+    <string name="questvision_ai_confirm_each">Enviar esta questão à OpenAI (%1$s, %2$s)? Consome créditos da sua conta: até cerca de US$ %3$s por envio (aproximado, não é um teto).</string>
+    <string name="questvision_ai_confirm_image_suffix">" Mais a imagem, que não entra na estimativa. Só o recorte da questão é enviado."</string>
+    <string name="questvision_review_back">Voltar</string>
+    <string name="questvision_photo_missing">Esta foto não está mais no celular. A resposta da IA e o registro do envio foram mantidos: abra-os pelo botão da IA.</string>
+    <string name="questvision_discard_refused">Não descartada: a IA está analisando esta questão. Tente de novo quando terminar.</string>
+    <string name="questvision_discard_failed">Não foi possível descartar a captura; nada foi perdido.</string>
+    <string name="questvision_cleanup_button">Limpar pendentes</string>
+    <string name="questvision_cleanup_title">Apagar capturas pendentes?</string>
+    <string name="questvision_cleanup_none">Não há capturas pendentes para limpar.</string>
+    <string name="questvision_cleanup_cancel">Cancelar</string>
+    <plurals name="questvision_cleanup_text">
+        <item quantity="one">%1$d captura pendente, nunca enviada à IA (%2$s MB, de %3$s a %4$s), será apagada: foto e registro. Respondidas, em análise, com falha, já enviadas e mantidas nunca são afetadas. Não pode ser desfeito.</item>
+        <item quantity="other">%1$d capturas pendentes, nunca enviadas à IA (%2$s MB, de %3$s a %4$s), serão apagadas: fotos e registros. Respondidas, em análise, com falha, já enviadas e mantidas nunca são afetadas. Não pode ser desfeito.</item>
+    </plurals>
+    <plurals name="questvision_cleanup_confirm">
+        <item quantity="one">Apagar %1$d</item>
+        <item quantity="other">Apagar %1$d</item>
+    </plurals>
+    <plurals name="questvision_cleanup_done">
+        <item quantity="one">%1$d captura pendente apagada</item>
+        <item quantity="other">%1$d capturas pendentes apagadas</item>
+    </plurals>
 </resources>

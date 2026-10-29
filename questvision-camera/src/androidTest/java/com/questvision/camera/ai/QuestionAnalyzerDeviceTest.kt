@@ -18,7 +18,9 @@ package com.questvision.camera.ai
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.os.Process
 import android.util.Base64
 import androidx.room.Room
@@ -147,8 +149,7 @@ class QuestionAnalyzerDeviceTest {
             override suspend fun encode(
                 file: File,
                 maxDimension: Int,
-                region: RegionPolicy,
-            ): EncodedImage? = null
+            ): ImageEncoding = ImageEncoding.Unreadable
         },
         settings,
     )
@@ -301,7 +302,8 @@ class QuestionAnalyzerDeviceTest {
                 assertEquals(question.ocrText, stored.ocrText)
                 assertTrue(repository.fileOf(stored).exists())
                 val log = repository.aiRequestsFor(question.id).single()
-                assertEquals(AiRequestOutcome.FAILED, log.outcome)
+                // An error from OpenAI is a known failure; no answer at all is unknown (maybe billed).
+                assertEquals(if (expected.outcomeUnknown) AiRequestOutcome.UNKNOWN else AiRequestOutcome.FAILED, log.outcome)
                 assertEquals(expected.name, log.errorCode)
             }
             // Billed usage of an unusable response is kept for the accounting.
@@ -413,35 +415,79 @@ class QuestionAnalyzerDeviceTest {
             assertEquals(2, restarted.aiRequestsInLimitWindow())
         }
 
-    /** The real encoder: a 2000×1500 photo goes out as a JPEG downscaled to the setting (1600). */
+    /** Privacy, phase 3.5: a photo where no question can be located is never sent, not even on request. */
     @Test
-    fun imageMode_sendsTheRealPhoto_downscaled() =
+    fun aPhotoWithoutALocatableQuestion_isNeverSent_evenManually() =
         runBlocking {
             val question = storeQuestion(1)
             val file = repository().fileOf(question)
             Bitmap.createBitmap(2_000, 1_500, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }.let { bitmap ->
                 file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
             }
-            settings.settings = settings.settings.copy(imageMaxDimension = 1_600)
             transport.reply(ok())
             val repository = repository().also { it.reconcile() }
 
             val result =
-                analyzer(
-                    repository,
-                    JpegQuestionImageEncoder(captures, MlKitTextRecognitionEngine(context)),
-                ).analyze(question.id, AnalysisMode.IMAGE)
+                analyzer(repository, JpegQuestionImageEncoder(captures, MlKitTextRecognitionEngine(context)))
+                    .analyze(question.id, AnalysisMode.IMAGE)
 
-            assertTrue(result is AnalysisResult.Answered)
+            assertEquals(AnalysisResult.Rejected(AnalysisRejection.QUESTION_REGION_NOT_FOUND), result)
+            assertEquals(0, transport.calls)
+            assertEquals(0, repository.aiRequestsInLimitWindow())
+            assertEquals(AiStatus.PENDING, repository.question(question.id)!!.aiStatus)
+        }
+
+    /** The real encoder sends only the question's crop, and the request log keeps its size (not its content). */
+    @Test
+    fun imageMode_sendsOnlyTheCrop_andLogsItsSize() =
+        runBlocking {
+            val question = storeQuestion(1)
+            val file = repository().fileOf(question)
+            val bitmap = Bitmap.createBitmap(2_000, 1_500, Bitmap.Config.ARGB_8888)
+            Canvas(bitmap).apply {
+                drawColor(Color.WHITE)
+                val paint =
+                    Paint().apply {
+                        color = Color.BLACK
+                        textSize = 34f
+                        isAntiAlias = true
+                    }
+                drawText("Lembrança De Notificação Extrajudicial", 30f, 200f, paint)
+                listOf(
+                    "Mensagem anterior da conversa.",
+                    "",
+                    "",
+                    "Questão 07 — Redes de Computadores",
+                    "Qual protocolo atribui endereços IP automaticamente aos dispositivos?",
+                    "",
+                    "A) DNS",
+                    "B) DHCP",
+                    "C) FTP",
+                    "D) SSH",
+                    "",
+                    "Pergunte ao ChatGPT",
+                ).forEachIndexed { i, line -> drawText(line, 700f, 300f + i * 60f, paint) }
+            }
+            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+            transport.reply(ok())
+            val repository = repository().also { it.reconcile() }
+
+            val result =
+                analyzer(repository, JpegQuestionImageEncoder(captures, MlKitTextRecognitionEngine(context)))
+                    .analyze(question.id, AnalysisMode.IMAGE)
+
+            assertTrue(result.toString(), result is AnalysisResult.Answered)
             val dataUrl = Regex("\"image_url\":\"(data:image/jpeg;base64,[^\"]+)\"").find(transport.bodies.single())!!.groupValues[1]
             val bytes = Base64.decode(dataUrl.substringAfter(","), Base64.DEFAULT)
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            assertEquals(1_600, bounds.outWidth)
-            assertEquals(1_200, bounds.outHeight)
+            assertTrue("${bounds.outWidth}x${bounds.outHeight}", bounds.outWidth < 2_000 && bounds.outHeight < 1_500)
+            val log = repository.aiRequestsFor(question.id).single()
+            assertEquals(bounds.outWidth, log.imageWidth)
+            assertEquals(bounds.outHeight, log.imageHeight)
+            assertEquals(bytes.size, log.imageBytes)
             // The stored photo is only read.
-            assertTrue(file.length() > 0)
-            assertEquals(AnalysisMode.IMAGE, repository.aiRequestsFor(question.id).single().mode)
+            assertEquals(2_000, BitmapFactory.decodeFile(file.path).width)
         }
 
     /** A photo missing on disk: the image mode sends nothing, claims nothing and logs nothing. */

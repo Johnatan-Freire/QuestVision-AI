@@ -197,12 +197,13 @@ class CaptureRepository internal constructor(
     /** Whether [file] is in the preserved folder. */
     fun isPreserved(file: File): Boolean = file.parentFile == keptDirectory
 
-    suspend fun delete(file: File) {
+    /** Deletes [file]; true when it is gone afterwards (also when it was already missing). */
+    suspend fun delete(file: File): Boolean =
         withContext(ioDispatcher) {
             file.delete()
             thumbnails.remove(file.path)
+            !file.exists()
         }
-    }
 
     /** A small, upright thumbnail of [file] for the history grid, cached in memory. */
     suspend fun loadThumbnail(file: File): Bitmap? {

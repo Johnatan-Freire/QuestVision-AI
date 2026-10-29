@@ -32,6 +32,8 @@ import com.questvision.camera.data.ReconcileReport
 import com.questvision.camera.recognition.OcrScreens
 import com.questvision.camera.settings.AiSettings
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -236,7 +238,8 @@ class QuestionAnalyzerTest {
                 assertEquals(q.ocrText, stored.ocrText)
                 assertTrue(captures.resolve(q.imagePath).exists())
                 val log = requests.requestsFor(q.id).single()
-                assertEquals(AiRequestOutcome.FAILED, log.outcome)
+                // OpenAI answered with an error: a known failure. No answer at all: unknown, maybe billed.
+                assertEquals(if (expected.outcomeUnknown) AiRequestOutcome.UNKNOWN else AiRequestOutcome.FAILED, log.outcome)
                 assertEquals(expected.name, log.errorCode)
                 assertEquals(failure.httpStatus, log.httpStatus)
             }
@@ -442,6 +445,85 @@ class QuestionAnalyzerTest {
             assertEquals(AnalysisResult.Rejected(AnalysisRejection.NOT_RECORDED), analyzer(client).analyze("missing", AnalysisMode.TEXT))
             assertEquals(0, client.calls)
             assertEquals(noText, row(noText))
+        }
+
+    // Phase 3.5, critical 1: the whole photo is never sent, not even when the user picked the image mode.
+    @Test
+    fun manualImageMode_withoutTheQuestionsRegion_sendsNothing() =
+        runTest(dispatcher) {
+            val q = question()
+            val client = FakeAiClient(completed())
+            images.regionFound = false
+
+            val result = analyzer(client).analyze(q.id, AnalysisMode.IMAGE)
+
+            assertEquals(AnalysisResult.Rejected(AnalysisRejection.QUESTION_REGION_NOT_FOUND), result)
+            assertEquals(0, client.calls)
+            assertTrue(requests.rows.isEmpty())
+            assertEquals(AiStatus.PENDING, row(q).aiStatus)
+        }
+
+    // Phase 3.5, critical 3: a cancellation arriving just after the (possibly billed) answer never loses it.
+    @Test
+    fun aCancellationRightAfterTheAnswerArrived_stillStoresIt() =
+        runTest(dispatcher) {
+            val q = question()
+            val client =
+                object : AiClient {
+                    override suspend fun send(
+                        key: com.questvision.camera.settings.ApiKey,
+                        input: AiInput,
+                        options: AiRequestOptions,
+                    ): AiCallResult {
+                        // The user taps "Cancel" right as the response comes in.
+                        currentCoroutineContext().job.cancel()
+                        return completed()
+                    }
+                }
+
+            launch { analyzer(client).analyze(q.id, AnalysisMode.TEXT) }.join()
+
+            assertEquals(AiStatus.ANSWERED, row(q).aiStatus)
+            assertEquals(
+                AiRequestOutcome.SUCCEEDED,
+                requests.rows.values
+                    .single()
+                    .outcome,
+            )
+        }
+
+    // Phase 3.5, critical 4: no answer is "unknown", never a plain failure: it may have been billed.
+    @Test
+    fun aLostConnection_isLoggedAsUnknown_notAsAFailure() =
+        runTest(dispatcher) {
+            val q = question()
+            val client = FakeAiClient(AiCallResult.Failed(AiError.TIMEOUT, null))
+
+            analyzer(client).analyze(q.id, AnalysisMode.TEXT)
+
+            assertEquals(
+                AiRequestOutcome.UNKNOWN,
+                requests.rows.values
+                    .single()
+                    .outcome,
+            )
+            assertEquals(AiStatus.FAILED, row(q).aiStatus)
+            assertEquals(1, client.calls)
+        }
+
+    // Phase 3.5, item 9: the size of the crop actually sent, never its content.
+    @Test
+    fun theSentImagesSize_isLogged() =
+        runTest(dispatcher) {
+            val q = question()
+            images.image = EncodedImage("data:image/jpeg;base64,/9j/AAAA", 1165, 737, cropped = true, byteCount = 148_553)
+
+            analyzer(FakeAiClient(completed())).analyze(q.id, AnalysisMode.IMAGE)
+
+            val log = requests.rows.values.single()
+            assertEquals(1165, log.imageWidth)
+            assertEquals(737, log.imageHeight)
+            assertEquals(148_553, log.imageBytes)
         }
 
     @Test

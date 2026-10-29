@@ -45,6 +45,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Pause
@@ -52,9 +53,11 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -72,6 +75,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -103,9 +107,13 @@ import com.android.camera.coreui.state.LoadingView
 import com.android.camera.coreui.state.UnsupportedView
 import com.questvision.camera.ai.AiAnalysisPanel
 import com.questvision.camera.ai.AutoAnalysisStatus
+import com.questvision.camera.data.PendingCleanup
 import com.questvision.camera.detection.MonitoringState
 import com.questvision.camera.settings.AiSettingsPanel
 import kotlinx.coroutines.delay
+import java.text.DateFormat
+import java.util.Date
+import java.util.Locale
 
 private const val NOTICE_VISIBLE_MS = 3_000L
 
@@ -173,6 +181,7 @@ fun QuestVisionCameraScreen(
                         onBack = viewModel::closeHistory,
                         onOpen = viewModel::openCapture,
                         loadThumbnail = viewModel::loadThumbnail,
+                        onCleanPending = viewModel::requestPendingCleanup,
                     )
                 }
                 // Composed after the history, so its back handler takes precedence.
@@ -192,7 +201,22 @@ fun QuestVisionCameraScreen(
                         if (showAnalysis) AiAnalysisPanel(file = file, onDismiss = { showAnalysis = false })
                     }
                 }
-                if (state.review == null && showAnalysis) showAnalysis = false
+                if (state.review == null && state.reviewPhotoMissing) {
+                    BackHandler(onBack = viewModel::closeReview)
+                    state.reviewFile?.let { file ->
+                        MissingPhotoReview(onBack = viewModel::closeReview)
+                        AiAnalysisButton(onClick = { showAnalysis = true })
+                        if (showAnalysis) AiAnalysisPanel(file = file, onDismiss = { showAnalysis = false })
+                    }
+                }
+                if (state.review == null && !state.reviewPhotoMissing && showAnalysis) showAnalysis = false
+                state.pendingCleanup?.let { preview ->
+                    PendingCleanupDialog(
+                        preview = preview,
+                        onConfirm = viewModel::confirmPendingCleanup,
+                        onDismiss = viewModel::cancelPendingCleanup,
+                    )
+                }
                 // On top of everything; the camera and monitoring keep running underneath.
                 if (showSettings) {
                     AiSettingsPanel(onDismiss = { showSettings = false })
@@ -443,6 +467,82 @@ private fun SidePanel(
     }
 }
 
+/**
+ * Confirms a cleanup of pending captures: how many, how much space, from when to when, and what is
+ * never touched. Nothing is removed until "Delete" is tapped.
+ */
+@Composable
+private fun PendingCleanupDialog(
+    preview: PendingCleanup,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val format = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.questvision_cleanup_title)) },
+        text = {
+            Text(
+                if (preview.count == 0) {
+                    stringResource(R.string.questvision_cleanup_none)
+                } else {
+                    pluralStringResource(
+                        R.plurals.questvision_cleanup_text,
+                        preview.count,
+                        preview.count,
+                        String.format(Locale.US, "%.1f", preview.bytes / (1024.0 * 1024.0)),
+                        format.format(Date(preview.oldestAt ?: 0L)),
+                        format.format(Date(preview.newestAt ?: 0L)),
+                    )
+                },
+            )
+        },
+        confirmButton = {
+            if (preview.count > 0) {
+                TextButton(onClick = onConfirm) {
+                    Text(pluralStringResource(R.plurals.questvision_cleanup_confirm, preview.count, preview.count))
+                }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.questvision_cleanup_cancel)) } },
+    )
+}
+
+/** A question whose photo is gone: a message and a way back; its stored answer opens from the AI button. */
+@Composable
+private fun MissingPhotoReview(
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier =
+            modifier
+                .fillMaxSize()
+                .background(Color.Black),
+    ) {
+        ScrimIconButton(
+            onClick = onBack,
+            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = stringResource(R.string.questvision_review_back),
+            modifier =
+                Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(16.dp),
+        )
+        Text(
+            text = stringResource(R.string.questvision_photo_missing),
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White.copy(alpha = 0.8f),
+            textAlign = TextAlign.Center,
+            modifier =
+                Modifier
+                    .align(Alignment.Center)
+                    .padding(32.dp),
+        )
+    }
+}
+
 /** Opens the AI analysis of the photo under review (top right, opposite the back button). */
 @Composable
 private fun AiAnalysisButton(
@@ -549,11 +649,25 @@ private fun NoticeText(
                 Notice.STORAGE_LOW -> {
                     stringResource(R.string.questvision_storage_low)
                 }
+
+                Notice.DISCARD_REFUSED -> {
+                    stringResource(R.string.questvision_discard_refused)
+                }
+
+                Notice.DISCARD_FAILED -> {
+                    stringResource(R.string.questvision_discard_failed)
+                }
+
+                Notice.PENDING_CLEANED -> {
+                    pluralStringResource(R.plurals.questvision_cleanup_done, state.cleanedCount, state.cleanedCount)
+                }
             },
         style = style,
         color =
             when (notice) {
-                Notice.CAPTURE_FAILED, Notice.TEXT_READ_FAILED, Notice.RECORD_FAILED, Notice.STORAGE_LOW -> {
+                Notice.CAPTURE_FAILED, Notice.TEXT_READ_FAILED, Notice.RECORD_FAILED, Notice.STORAGE_LOW,
+                Notice.DISCARD_REFUSED, Notice.DISCARD_FAILED,
+                -> {
                     MaterialTheme.colorScheme.error
                 }
 
@@ -562,7 +676,9 @@ private fun NoticeText(
                 }
 
                 // Skipped candidates are routine: keep them discreet.
-                Notice.DUPLICATE_IGNORED, Notice.UNREADABLE_IGNORED, Notice.ALREADY_ANALYZED, Notice.INCOMPLETE_SAVED -> {
+                Notice.DUPLICATE_IGNORED, Notice.UNREADABLE_IGNORED, Notice.ALREADY_ANALYZED, Notice.INCOMPLETE_SAVED,
+                Notice.PENDING_CLEANED,
+                -> {
                     Color.White.copy(alpha = 0.6f)
                 }
             },
