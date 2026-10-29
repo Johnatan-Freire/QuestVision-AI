@@ -195,4 +195,10 @@
     <string name="questvision_real_session_title">Iniciar sessão com envio real?</string>
     <string name="questvision_real_session_text">Cada questão nova e completa desta sessão será enviada à OpenAI (%1$s) sozinha, sem confirmação por questão, e consome créditos. No máximo %2$d nesta sessão; restam %3$d nas últimas 24 horas. Capturas pendentes anteriores nunca são enviadas. O envio para pelo resto da sessão em perda de conexão, erro de chave ou de crédito, limite atingido ou custo desconhecido; a captura continua.</string>
     <string name="questvision_real_session_confirm">Iniciar com envio real</string>
+    <string name="questvision_settings_trial">Teste: envio automático real</string>
+    <string name="questvision_settings_trial_armed">Armado</string>
+    <string name="questvision_settings_trial_notice">Só na versão de teste. Enquanto armado, uma sessão de monitoramento pode enviar sozinha as questões novas à OpenAI, depois do seu consentimento no início dela: no máximo %1$d envios no total para esta versão de teste, contados no banco desde a primeira vez que foi armado: desarmar, armar de novo, reiniciar ou reinstalar não zera. Capturas pendentes anteriores nunca são enviadas. Desligado por padrão.</string>
+    <string name="questvision_settings_trial_left">Envios restantes deste teste: %1$d de %2$d</string>
+    <string name="questvision_settings_trial_spent">Este teste terminou e não pode ser armado de novo. Outro teste exige uma nova versão de teste.</string>
+    <string name="questvision_auto_paused_trial_used_up">IA pausada: os envios do teste acabaram. As capturas continuam</string>
 </resources>

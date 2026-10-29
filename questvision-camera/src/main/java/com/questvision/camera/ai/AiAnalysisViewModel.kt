@@ -258,5 +258,5 @@ internal abstract class AiModule {
     abstract fun bindImageEncoder(encoder: JpegQuestionImageEncoder): QuestionImageEncoder
 
     @Binds
-    abstract fun bindAutoSendPolicy(policy: LockedAutoSendPolicy): AutoSendPolicy
+    abstract fun bindAutoSendPolicy(policy: ArmableTrialPolicy): AutoSendPolicy
 }

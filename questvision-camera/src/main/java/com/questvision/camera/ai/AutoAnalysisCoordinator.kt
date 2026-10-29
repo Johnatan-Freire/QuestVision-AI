@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 
 /** Whether automatic analysis may make real, billed requests to OpenAI, and how many per session at most. */
@@ -39,31 +40,49 @@ interface AutoSendPolicy {
 
     /** A hard cap per session on top of the user's setting (the lower of the two applies). */
     val maxRequestsPerSession: Int
+
+    /**
+     * A cap on all requests logged since [allowanceStartedAt], across sessions, restarts and
+     * reinstalls (it is counted in the database); null for none.
+     */
+    val maxRequestsTotal: Int? get() = null
+    val allowanceStartedAt: Long? get() = null
+
+    /** [maxRequestsTotal] is reached: real requests end until the user explicitly allows them again. */
+    fun allowanceUsedUp() {}
 }
 
 /**
- * Phase 3.4: the automatic flow is built and tested end to end with simulated clients only. Real
- * automatic requests stay off until the user explicitly authorizes them; until then a validated
- * question waits for the manual "Analisar", with its confirmations.
+ * Named Int, provided by the app module: the trial this build is for (`BuildConfig.AUTO_TRIAL_ID`);
+ * 0 outside the trial build. Each trial gets one allowance; another one needs a new trial build.
  */
-@Singleton
-class LockedAutoSendPolicy
-    @Inject
-    constructor() : AutoSendPolicy {
-        override val realRequestsAllowed: Boolean = false
-        override val maxRequestsPerSession: Int = 0
-    }
+const val AUTO_TRIAL_ID = "autoTrialId"
 
 /**
- * Phase 3.6, prepared but **not bound**: the supervised trial of real automatic requests, at most three
- * per session, each session started only after the user's explicit consent. Binding it in place of
- * [LockedAutoSendPolicy] (`AiModule`) is the step that needs the user's authorization.
+ * The policy the app uses. Outside the trial build it never allows a real automatic request. In the
+ * trial build it allows them only while the user has armed the trial (off by default), at most
+ * [TRIAL_MAX_REQUESTS_PER_SESSION] per session and **in total for that trial**, counted in the
+ * database since it was first armed: disarming and arming again doesn't renew it. Once used up it
+ * disarms itself and can't be armed again; nothing has to be reverted.
  */
-class TrialAutoSendPolicy
+@Singleton
+class ArmableTrialPolicy
     @Inject
-    constructor() : AutoSendPolicy {
-        override val realRequestsAllowed: Boolean = true
-        override val maxRequestsPerSession: Int = TRIAL_MAX_REQUESTS_PER_SESSION
+    constructor(
+        private val settings: AiSettingsStore,
+        @Named(AUTO_TRIAL_ID) private val trialId: Int,
+    ) : AutoSendPolicy {
+        private val trialBuild get() = trialId > 0
+
+        override val realRequestsAllowed: Boolean
+            get() = trialBuild && settings.load().let { it.autoTrialArmed && it.trialStartedAt(trialId) != null }
+        override val maxRequestsPerSession: Int get() = if (realRequestsAllowed) TRIAL_MAX_REQUESTS_PER_SESSION else 0
+        override val maxRequestsTotal: Int? get() = if (trialBuild) TRIAL_MAX_REQUESTS_PER_SESSION else null
+        override val allowanceStartedAt: Long? get() = if (trialBuild) settings.load().trialStartedAt(trialId) else null
+
+        override fun allowanceUsedUp() {
+            settings.save(settings.load().copy(autoTrialArmed = false))
+        }
     }
 
 /** Requests per session in the supervised trial of real automatic sending. */
@@ -112,6 +131,9 @@ enum class AutoPauseReason {
 
     /** Real requests are possible but the session was started without the user's consent: capture only. */
     NOT_AUTHORIZED,
+
+    /** The trial's total cap since it was armed is used up (counted in the database). */
+    TRIAL_USED_UP,
 }
 
 /** What the automatic flow did last, for the session panel. Question numbers as read by the OCR. */
@@ -223,17 +245,28 @@ class AutoAnalysisCoordinator
         // Only questions captured in this session are ever sent: earlier PENDING ones never are.
         private var sessionId: String? = null
 
+        // The user agreed to real requests when this session started; arming later doesn't count.
+        private var consented = false
+
         /** Starting a session with real requests needs the user's explicit consent (see [startSession]). */
         val needsConsentToStart: Boolean get() = policy.realRequestsAllowed
 
         /** What a session with real requests may do, for the consent shown before it starts. */
         suspend fun sessionTerms(): RealSessionTerms {
             val config = settings.load()
+            val trialLeft = trialRequestsLeft()
             return RealSessionTerms(
                 model = config.primaryModel.id,
-                maxRequests = sessionLimit(),
+                maxRequests = trialLeft?.let { minOf(it, sessionLimit()) } ?: sessionLimit(),
                 leftToday = (config.requestsPerDay - questions.aiRequestsInLimitWindow()).coerceAtLeast(0),
             )
+        }
+
+        /** Requests the trial still allows (its total cap minus those logged since it was armed); null: no cap. */
+        private suspend fun trialRequestsLeft(): Int? {
+            val total = policy.maxRequestsTotal ?: return null
+            val since = policy.allowanceStartedAt ?: return 0
+            return (total - questions.aiRequestsSince(since)).coerceAtLeast(0)
         }
 
         /** The most requests a session may make: the user's setting, capped by the policy. */
@@ -264,6 +297,7 @@ class AutoAnalysisCoordinator
             active = true
             paused = false
             sessionId = id
+            this.consented = policy.realRequestsAllowed && consented
             halted = if (policy.realRequestsAllowed && !consented) AutoPauseReason.NOT_AUTHORIZED else null
             _state.value =
                 AutoAnalysisState(
@@ -360,7 +394,8 @@ class AutoAnalysisCoordinator
             busy = false
             while (canSend && !busy) {
                 val item = queue.firstOrNull() ?: break
-                if (!policy.realRequestsAllowed) {
+                // Re-read each time: disarming mid-session stops sending; arming mid-session doesn't start it.
+                if (!policy.realRequestsAllowed || !consented) {
                     queue.removeFirst()
                     _state.update {
                         it.copy(
@@ -380,6 +415,10 @@ class AutoAnalysisCoordinator
                     selfPause(AutoPauseReason.DAILY_LIMIT)
                     break
                 }
+                if (trialRequestsLeft() == 0) {
+                    trialUsedUp()
+                    break
+                }
                 queue.removeFirst()
                 val row = questions.question(item.questionId)
                 if (row?.aiStatus != AiStatus.PENDING) {
@@ -390,6 +429,7 @@ class AutoAnalysisCoordinator
                 _state.update { it.copy(phase = AutoPhase.ANALYZING, queued = queue.size) }
                 val result = analyzer.analyze(item.questionId, item.mode)
                 handle(item, row, result)
+                if (trialRequestsLeft() == 0) trialUsedUp()
             }
             worker = null
             _state.update { it.copy(phase = phaseNow(), queued = queue.size) }
@@ -494,6 +534,12 @@ class AutoAnalysisCoordinator
                 )
             }
             return cost
+        }
+
+        /** The trial's total is spent: it disarms and this session sends no more (an earlier stop reason is kept). */
+        private fun trialUsedUp() {
+            policy.allowanceUsedUp()
+            if (halted == null) selfPause(AutoPauseReason.TRIAL_USED_UP)
         }
 
         /** Stops sending for the rest of the session; capturing goes on. */

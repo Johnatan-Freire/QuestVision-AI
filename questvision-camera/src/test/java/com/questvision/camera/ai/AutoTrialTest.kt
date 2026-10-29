@@ -31,7 +31,9 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -39,8 +41,8 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 /**
- * Phase 3.6 preparation: the supervised trial of real automatic requests ([TrialAutoSendPolicy], not
- * bound in the app) with OpenAI played by [FakeAiClient]. Nothing leaves the machine.
+ * Phase 3.6: the supervised trial of real automatic requests ([ArmableTrialPolicy], armed, in the
+ * trial build) with OpenAI played by [FakeAiClient]. Nothing leaves the machine.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AutoTrialTest {
@@ -54,19 +56,24 @@ class AutoTrialTest {
     private var now = 1_000L
     private val repository by lazy { QuestionRepository(dao, requests, DirectTransactions, captures, dispatcher) { now++ } }
 
-    // The user's setting is higher than the trial's cap on purpose.
-    private val settings = InMemoryAiSettingsStore(AiSettings(firstCallConfirmed = true, analysesPerSession = 10))
+    // Armed; the user's settings are higher than the trial's caps on purpose.
+    private val settings =
+        InMemoryAiSettingsStore(
+            AiSettings(firstCallConfirmed = true, analysesPerSession = 10, requestsPerDay = 50).armingTrial(TRIAL_ID, nowMs = 1L),
+        )
 
+    /** A new coordinator, as after an app restart: only the database and the settings carry over. */
     private fun trial(
         client: AiClient,
         scope: TestScope,
         session: String = "trial",
         consented: Boolean = true,
+        trialId: Int = TRIAL_ID,
     ) = AutoAnalysisCoordinator(
         QuestionAnalyzer(repository, FakeKeySource(), client, FakeImageEncoder(), settings),
         repository,
         settings,
-        TrialAutoSendPolicy(),
+        ArmableTrialPolicy(settings, trialId),
     ).apply {
         attach(scope)
         startSession(session, consented)
@@ -98,8 +105,183 @@ class AutoTrialTest {
 
             assertEquals(3, client.calls)
             assertEquals(3, auto.state.value.sessionLimit)
-            assertEquals(AutoPauseReason.SESSION_LIMIT, auto.state.value.pauseReason)
+            assertEquals(AutoPauseReason.TRIAL_USED_UP, auto.state.value.pauseReason)
             assertEquals(2, dao.questions.count { it.aiStatus == AiStatus.PENDING })
+        }
+
+    // The total is counted in the database: a restart (new coordinator) or a new session resets nothing.
+    @Test
+    fun theTotalOfThree_survivesRestartsAndNewSessions_andTheFourthStaysPending() =
+        runTest(dispatcher) {
+            val client = FakeAiClient(completed())
+            val first = trial(client, this, session = "s1")
+            (1..2).forEach { first.submit(question(it, session = "s1"), assessment(it)) }
+            first.endSession()
+
+            val afterRestart = trial(client, this, session = "s2")
+            assertEquals(1, afterRestart.sessionTerms().maxRequests)
+            afterRestart.submit(question(3, session = "s2"), assessment(3))
+            val fourth = question(1, session = "s2")
+            afterRestart.submit(fourth, assessment(1))
+
+            assertEquals(3, client.calls)
+            assertEquals(AiStatus.PENDING, dao.question(fourth.id)!!.aiStatus)
+            assertEquals(AutoPauseReason.TRIAL_USED_UP, afterRestart.state.value.pauseReason)
+            // It disarmed itself: the next session needs no consent and sends nothing.
+            assertFalse(settings.settings.autoTrialArmed)
+            val later = trial(client, this, session = "s3", consented = false)
+            assertFalse(later.needsConsentToStart)
+            later.submit(question(2, session = "s3"), assessment(2))
+            assertEquals(3, client.calls)
+        }
+
+    @Test
+    fun pauseAndResume_neverGetPastTheTotal() =
+        runTest(dispatcher) {
+            val client = FakeAiClient(completed())
+            val auto = trial(client, this)
+            (1..3).forEach { auto.submit(question(it), assessment(it)) }
+
+            auto.pause()
+            auto.resume()
+            auto.submit(question(1), assessment(1))
+
+            assertEquals(3, client.calls)
+            assertEquals(AutoPauseReason.TRIAL_USED_UP, auto.state.value.pauseReason)
+        }
+
+    @Test
+    fun pausing_holdsNewQuestionsBack_untilResumed() =
+        runTest(dispatcher) {
+            val client = FakeAiClient(completed())
+            val auto = trial(client, this)
+
+            auto.pause()
+            val held = question(1)
+            auto.submit(held, assessment(1))
+            assertEquals(0, client.calls)
+            assertEquals(AiStatus.PENDING, dao.question(held.id)!!.aiStatus)
+
+            auto.resume()
+            assertEquals(1, client.calls)
+        }
+
+    // A request whose outcome is unknown may have been billed: it counts, and is never resent.
+    @Test
+    fun anUnknownOutcome_countsTowardTheTotal() =
+        runTest(dispatcher) {
+            val client = FakeAiClient(AiCallResult.Failed(AiError.TIMEOUT, null), completed())
+            val first = trial(client, this, session = "s1")
+            val lost = question(1, session = "s1")
+            first.submit(lost, assessment(1))
+            assertEquals(AutoPauseReason.CONNECTION, first.state.value.pauseReason)
+
+            val next = trial(client, this, session = "s2")
+            assertEquals(2, next.sessionTerms().maxRequests)
+            (1..3).forEach { next.submit(question(it, session = "s2"), assessment(it)) }
+
+            assertEquals(3, client.calls)
+            assertEquals(AiStatus.FAILED, dao.question(lost.id)!!.aiStatus)
+            assertEquals(1, requests.rows.values.count { it.outcome == AiRequestOutcome.UNKNOWN })
+        }
+
+    // Outside the trial build, arming does nothing (and the switch isn't even shown).
+    @Test
+    fun otherBuilds_neverSend_evenIfArmed() =
+        runTest(dispatcher) {
+            val client = FakeAiClient(completed())
+            val auto = trial(client, this, consented = false, trialId = 0)
+
+            assertFalse(auto.needsConsentToStart)
+            auto.submit(question(1), assessment(1))
+
+            assertEquals(0, client.calls)
+            assertEquals(1, auto.state.value.awaitingAuthorization)
+        }
+
+    @Test
+    fun theTrialBuild_sendsNothing_untilArmed() =
+        runTest(dispatcher) {
+            settings.settings = AiSettings(firstCallConfirmed = true)
+            val client = FakeAiClient(completed())
+            val auto = trial(client, this, consented = false)
+
+            assertFalse(auto.needsConsentToStart)
+            assertEquals(0, auto.sessionTerms().maxRequests)
+            auto.submit(question(1), assessment(1))
+
+            assertEquals(0, client.calls)
+        }
+
+    // Consent is given at the start of a session: arming during one that started without it sends nothing.
+    @Test
+    fun armingMidSession_doesNotSend() =
+        runTest(dispatcher) {
+            settings.settings = settings.settings.copy(autoTrialArmed = false)
+            val client = FakeAiClient(completed())
+            val auto = trial(client, this, consented = false)
+
+            settings.settings = settings.settings.armingTrial(TRIAL_ID, nowMs = now)
+            auto.submit(question(1), assessment(1))
+
+            assertEquals(0, client.calls)
+        }
+
+    @Test
+    fun disarmingMidSession_stopsSending() =
+        runTest(dispatcher) {
+            val client = FakeAiClient(completed())
+            val auto = trial(client, this)
+            auto.submit(question(1), assessment(1))
+
+            settings.settings = settings.settings.copy(autoTrialArmed = false)
+            auto.submit(question(2), assessment(2))
+
+            assertEquals(1, client.calls)
+        }
+
+    // One allowance per trial build: arming again (even past the screen, straight in the settings) renews nothing.
+    @Test
+    fun rearming_neverRenewsTheAllowance() =
+        runTest(dispatcher) {
+            val client = FakeAiClient(completed())
+            val first = trial(client, this, session = "s1")
+            first.submit(question(1, session = "s1"), assessment(1))
+            settings.settings = settings.settings.copy(autoTrialArmed = false)
+            settings.settings = settings.settings.armingTrial(TRIAL_ID, nowMs = now + 1_000)
+            assertEquals(1L, settings.settings.autoTrialStartedAt)
+
+            val second = trial(client, this, session = "s2")
+            (1..3).forEach { second.submit(question(it, session = "s2"), assessment(it)) }
+            assertEquals(3, client.calls)
+
+            settings.settings = settings.settings.copy(autoTrialArmed = true)
+            val third = trial(client, this, session = "s3")
+            assertEquals(0, third.sessionTerms().maxRequests)
+            third.submit(question(1, session = "s3"), assessment(1))
+
+            assertEquals(3, client.calls)
+            assertEquals(AutoPauseReason.TRIAL_USED_UP, third.state.value.pauseReason)
+        }
+
+    // Only a new trial build (a new id, which needs the user's authorization) brings a new allowance.
+    @Test
+    fun aNewTrialBuild_isTheOnlyWayToANewAllowance() =
+        runTest(dispatcher) {
+            val client = FakeAiClient(completed())
+            val first = trial(client, this, session = "s1")
+            (1..3).forEach { first.submit(question(it, session = "s1"), assessment(it)) }
+
+            // Armed for trial 1 doesn't arm trial 2.
+            settings.settings = settings.settings.copy(autoTrialArmed = true)
+            val otherBuild = trial(client, this, session = "s2", consented = false, trialId = TRIAL_ID + 1)
+            assertFalse(otherBuild.needsConsentToStart)
+
+            settings.settings = settings.settings.armingTrial(TRIAL_ID + 1, nowMs = now)
+            val next = trial(client, this, session = "s3", trialId = TRIAL_ID + 1)
+            (1..4).forEach { next.submit(question(1 + it % 3, session = "s3"), assessment(1 + it % 3)) }
+
+            assertEquals(6, client.calls)
         }
 
     @Test
@@ -206,3 +388,5 @@ class AutoTrialTest {
             assertEquals(3 * (412 * 0.10 + 96 * 0.50) / 1_000_000.0, auto.state.value.observedCostUsd, 1e-12)
         }
 }
+
+private const val TRIAL_ID = 1

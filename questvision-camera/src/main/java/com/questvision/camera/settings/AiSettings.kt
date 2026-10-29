@@ -78,7 +78,30 @@ data class AiSettings(
     val imageMaxDimension: Int = 2_048,
     /** The user confirmed the first real request (model, mode, cost) once. */
     val firstCallConfirmed: Boolean = false,
+    /** Trial build only: the user armed the supervised trial of real automatic requests (off by default). */
+    val autoTrialArmed: Boolean = false,
+    /** The trial build ([com.questvision.camera.ai.AUTO_TRIAL_ID]) whose allowance [autoTrialStartedAt] belongs to; 0: none. */
+    val autoTrialId: Int = 0,
+    /**
+     * When that trial was first armed. Never moved by disarming and arming again: every request logged
+     * since then counts toward its one allowance.
+     */
+    val autoTrialStartedAt: Long? = null,
 ) {
+    /** Arms trial [trialId]: its allowance starts on the first arming only. */
+    fun armingTrial(
+        trialId: Int,
+        nowMs: Long,
+    ): AiSettings =
+        if (autoTrialId == trialId && autoTrialStartedAt != null) {
+            copy(autoTrialArmed = true)
+        } else {
+            copy(autoTrialArmed = true, autoTrialId = trialId, autoTrialStartedAt = nowMs)
+        }
+
+    /** When trial [trialId]'s allowance started; null if it was never armed. */
+    fun trialStartedAt(trialId: Int): Long? = autoTrialStartedAt.takeIf { autoTrialId == trialId }
+
     companion object {
         val requestsPerDayOptions = listOf(5, 10, 20, 50)
         val analysesPerSessionOptions = listOf(3, 5, 10)
@@ -135,6 +158,9 @@ class SharedPreferencesAiSettingsStore
                         .getInt(IMAGE_MAX_DIMENSION, defaults.imageMaxDimension)
                         .takeIf { it in AiSettings.imageMaxDimensionOptions } ?: defaults.imageMaxDimension,
                 firstCallConfirmed = preferences.getBoolean(FIRST_CALL_CONFIRMED, defaults.firstCallConfirmed),
+                autoTrialArmed = preferences.getBoolean(AUTO_TRIAL_ARMED, false),
+                autoTrialId = preferences.getInt(AUTO_TRIAL_ID, 0),
+                autoTrialStartedAt = preferences.getLong(AUTO_TRIAL_STARTED_AT, -1L).takeIf { it > 0L },
             )
         }
 
@@ -151,6 +177,9 @@ class SharedPreferencesAiSettingsStore
                 .putInt(MAX_OUTPUT_TOKENS, settings.maxOutputTokens)
                 .putInt(IMAGE_MAX_DIMENSION, settings.imageMaxDimension)
                 .putBoolean(FIRST_CALL_CONFIRMED, settings.firstCallConfirmed)
+                .putBoolean(AUTO_TRIAL_ARMED, settings.autoTrialArmed)
+                .putInt(AUTO_TRIAL_ID, settings.autoTrialId)
+                .putLong(AUTO_TRIAL_STARTED_AT, settings.autoTrialStartedAt ?: -1L)
                 .apply()
         }
 
@@ -166,5 +195,8 @@ class SharedPreferencesAiSettingsStore
             const val MAX_OUTPUT_TOKENS = "max_output_tokens"
             const val IMAGE_MAX_DIMENSION = "image_max_dimension"
             const val FIRST_CALL_CONFIRMED = "first_call_confirmed"
+            const val AUTO_TRIAL_ARMED = "auto_trial_armed"
+            const val AUTO_TRIAL_ID = "auto_trial_id"
+            const val AUTO_TRIAL_STARTED_AT = "auto_trial_started_at"
         }
     }

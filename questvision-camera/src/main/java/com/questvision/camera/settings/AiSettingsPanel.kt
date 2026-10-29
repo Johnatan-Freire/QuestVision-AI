@@ -31,6 +31,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -51,7 +52,9 @@ import com.android.camera.coreui.overlay.SettingsDropdown
 import com.android.camera.coreui.overlay.SettingsHeader
 import com.android.camera.coreui.overlay.SettingsOverlay
 import com.android.camera.coreui.overlay.SettingsRow
+import com.android.camera.coreui.overlay.settingsSwitchColors
 import com.questvision.camera.R
+import com.questvision.camera.ai.TRIAL_MAX_REQUESTS_PER_SESSION
 import java.util.Locale
 
 /**
@@ -129,6 +132,31 @@ fun AiSettingsPanel(
                 onSelected = viewModel::selectImageMaxDimension,
                 optionLabel = { it.toString() },
             )
+            if (state.trialAvailable) {
+                SettingsHeader(text = stringResource(R.string.questvision_settings_trial))
+                SettingsRow(label = stringResource(R.string.questvision_settings_trial_armed)) {
+                    Switch(
+                        checked = state.settings.autoTrialArmed,
+                        onCheckedChange = viewModel::setAutoTrialArmed,
+                        // Used up: it can still be switched off, never on again.
+                        enabled = state.settings.autoTrialArmed || state.trialRequestsLeft > 0,
+                        colors = settingsSwitchColors(),
+                    )
+                }
+                Notice(
+                    text =
+                        if (state.trialRequestsLeft > 0) {
+                            stringResource(
+                                R.string.questvision_settings_trial_left,
+                                state.trialRequestsLeft,
+                                TRIAL_MAX_REQUESTS_PER_SESSION,
+                            )
+                        } else {
+                            stringResource(R.string.questvision_settings_trial_spent)
+                        },
+                )
+                Notice(text = stringResource(R.string.questvision_settings_trial_notice, TRIAL_MAX_REQUESTS_PER_SESSION))
+            }
             Notice(text = stringResource(R.string.questvision_settings_not_sending_yet))
         }
     }

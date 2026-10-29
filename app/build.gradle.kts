@@ -40,7 +40,19 @@ android {
     }
 
     buildTypes {
+        debug {
+            buildConfigField("int", "AUTO_TRIAL_ID", "0")
+        }
+        // The only variant where real automatic requests can exist (still off until armed in the
+        // app's settings). Same applicationId and debug signature: installs over the debug build.
+        create("trial") {
+            initWith(getByName("debug"))
+            matchingFallbacks += listOf("debug")
+            // One allowance of three real requests per trial id: another trial needs a new id (and authorization).
+            buildConfigField("int", "AUTO_TRIAL_ID", "1")
+        }
         release {
+            buildConfigField("int", "AUTO_TRIAL_ID", "0")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -54,6 +66,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

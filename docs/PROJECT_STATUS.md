@@ -2305,7 +2305,7 @@ Brasília): 1 requisição de `gpt-6-luna`, cerca de 1.486 tokens de entrada (1.
      - 50 questões, 4 sessões e 2 registros em `ai_requests` idênticos byte a byte ao backup;
      - 50 fotos e a chave com o mesmo MD5; configurações iguais; nenhum `sk-` no Logcat.
 
-## 3n. Fase 3.6: preparação do envio automático real com três questões (2026-10-29, não commitada)
+## 3n. Fase 3.6: preparação do envio automático real com três questões (2026-10-29, `8ac4e0f`, local)
 
 **Publicação da 3.5:** push de `670804c` para `origin/questvision/fase-1`, confirmado com
 `git ls-remote`; a `main` continua em `2f10e46`; sem merge nem coautoria.
@@ -2351,6 +2351,65 @@ Nenhuma chamada real foi feita nesta etapa.
   idênticos ao backup de 2026-10-29; 50 fotos, chave e configurações iguais. O app instalado não foi
   atualizado nesta etapa.
 - **Bateria no momento:** 28 %, carregando, **42,6 °C**.
+
+## 3o. Fase 3.6: variante exclusiva de teste (2026-10-29, não commitada, sem chamadas reais)
+
+**Variante `trial`** (build type do `:app`; mesmo `applicationId` `com.questvision.ai` e mesma
+assinatura de debug, então instala por cima com `install -r` sem apagar dados):
+
+- `BuildConfig.AUTO_TRIAL_ID`: `1` no `trial`; `0` no `debug` e no `release`. `BuildVariantModule`
+  (`:app`) fornece o valor como `@Named("autoTrialId")`.
+- O app liga `AutoSendPolicy` a `ArmableTrialPolicy`. `LockedAutoSendPolicy` e `TrialAutoSendPolicy`
+  foram removidas. Envio real só ocorre com **build `trial` + teste armado para esse id**. Em qualquer
+  outra build, armar não tem efeito e o interruptor nem aparece.
+- **Armar** (Configurações → "Teste: envio automático real" → "Armado") grava nas preferências
+  `auto_trial_armed`, `auto_trial_id` e `auto_trial_started_at`. Este último é o momento da
+  **primeira** vez em que se armou esse id. O padrão é desligado.
+- **Cota única de 3 por versão de teste**, contada em `ai_requests` desde `auto_trial_started_at`.
+  - A contagem inclui requisições manuais e `UNKNOWN`.
+  - Desarmar e armar de novo **não** move o início, então não renova a cota.
+  - Reiniciar ou reinstalar com `install -r` não zera nada.
+  - Esgotada a cota, o interruptor fica desabilitado ("Este teste terminou").
+  - Mesmo que a preferência seja forçada para armado, a política conta zero envios restantes.
+  - Uma nova cota exige uma nova build `trial` com `AUTO_TRIAL_ID` incrementado, o que é uma
+    alteração de código sujeita a autorização.
+  - Limite conhecido: desinstalar apaga as preferências e o banco (e com eles todo o histórico).
+    Nunca se desinstala.
+- **Desarme automático:** ao atingir 3, a política desarma e a sessão para com `TRIAL_USED_UP`. Não
+  depende de reverter código.
+- **Consentimento:** é avaliado no início da sessão. Armar no meio de uma sessão iniciada sem
+  consentimento não envia nada; desarmar no meio para os envios.
+- **Pausa e retomada:** a retomada só levanta a pausa do usuário. Limites, erros, custo desconhecido
+  e `TRIAL_USED_UP` seguem valendo até uma nova sessão.
+- **Inventário:** são 50 fotos (48 em `captures/` e 2 em `captures/kept/`) mais 1 arquivo de chave,
+  51 arquivos ao todo. O "51 fotos" do relatório anterior estava errado.
+
+**Testes:**
+
+- **JVM: 284/284** ✅. `AutoTrialTest` tem 17 testes; os novos cobrem:
+  - total persistente entre reinício e sessões, com a 4ª questão pendente;
+  - pausa e retomada;
+  - `UNKNOWN` contado;
+  - build não-`trial`;
+  - não armado;
+  - armar ou desarmar no meio da sessão;
+  - rearmar nunca renova a cota;
+  - só uma nova build `trial` traz uma nova cota.
+
+  Também são novos `theTrialSwitch_isOffByDefault_andOnlyInTheTrialBuild` e
+  `theTrial_cannotBeRearmedForMoreRequests`.
+- **Instrumentados no M52: 36/36** ✅. O novo `AiSettingsStoreDeviceTest` confirma que o estado
+  armado persiste num novo store; ele usa as preferências do APK de teste. O app não foi reinstalado.
+- **Integridade no M52 (só leitura):**
+  - banco v3 íntegro;
+  - `questions` e `capture_sessions` idênticas ao backup de 2026-10-29;
+  - `ai_requests` idêntica nas colunas comuns (2 registros);
+  - as 50 fotos e a chave (51 arquivos) têm MD5 igual;
+  - preferências sem nenhuma chave `auto_trial_*`.
+- **Condições do aparelho:** temperatura de 37,2 °C antes e 38,3 °C no pico; 22 % de bateria,
+  carregando pelo USB.
+- `assembleDebug`, `assembleTrial` e `spotlessCheck` ✅. Flags confirmadas no `BuildConfig` gerado:
+  `AUTO_TRIAL_ID` vale `1` no `trial` e `0` no `debug`. O APK `trial` não contém chave.
 
 ## 4. Funcionalidades implementadas
 

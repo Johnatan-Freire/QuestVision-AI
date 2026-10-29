@@ -15,12 +15,12 @@
  */
 package com.questvision.camera
 
+import com.questvision.camera.ai.ArmableTrialPolicy
 import com.questvision.camera.ai.AutoEvent
 import com.questvision.camera.ai.AutoPauseReason
 import com.questvision.camera.ai.FakeAiClient
 import com.questvision.camera.ai.FixedAutoSendPolicy
 import com.questvision.camera.ai.InMemoryAiSettingsStore
-import com.questvision.camera.ai.TrialAutoSendPolicy
 import com.questvision.camera.ai.answerJson
 import com.questvision.camera.ai.autoAnalysis
 import com.questvision.camera.ai.completed
@@ -110,7 +110,8 @@ class QuestVisionCameraViewModelTest {
     ) = CaptureRepository(root, dispatcher)
         .let { captures ->
             val repository = QuestionRepository(dao, requests, DirectTransactions, captures, dispatcher)
-            val policy = if (trial) TrialAutoSendPolicy() else FixedAutoSendPolicy(allowRequests)
+            if (trial) settings.settings = settings.settings.armingTrial(trialId = 1, nowMs = 1L)
+            val policy = if (trial) ArmableTrialPolicy(settings, trialId = 1) else FixedAutoSendPolicy(allowRequests)
             QuestVisionCameraViewModel(
                 captures,
                 ocr,

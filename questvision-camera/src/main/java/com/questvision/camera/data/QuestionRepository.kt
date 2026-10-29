@@ -318,6 +318,9 @@ class QuestionRepository internal constructor(
             }
         }
 
+    /** Requests started at or after [since], whatever their outcome (unknown ones included). */
+    suspend fun aiRequestsSince(since: Long): Int = serialized { requests.countSince(since) }
+
     /** Requests started in the last [AI_LIMIT_WINDOW_MS], whatever their outcome. */
     suspend fun aiRequestsInLimitWindow(): Int = serialized { requests.countSince(clock() - AI_LIMIT_WINDOW_MS) }
 
