@@ -92,6 +92,8 @@ private fun phaseLabel(state: AutoAnalysisState): String =
                     AutoPauseReason.NO_KEY -> R.string.questvision_auto_paused_no_key
                     AutoPauseReason.CONNECTION -> R.string.questvision_auto_paused_connection
                     AutoPauseReason.API_ERROR -> R.string.questvision_auto_paused_api_error
+                    AutoPauseReason.UNKNOWN_COST -> R.string.questvision_auto_paused_unknown_cost
+                    AutoPauseReason.NOT_AUTHORIZED -> R.string.questvision_auto_paused_not_authorized
                     AutoPauseReason.USER, null -> R.string.questvision_auto_paused
                 },
             )

@@ -2305,6 +2305,53 @@ Brasília): 1 requisição de `gpt-6-luna`, cerca de 1.486 tokens de entrada (1.
      - 50 questões, 4 sessões e 2 registros em `ai_requests` idênticos byte a byte ao backup;
      - 50 fotos e a chave com o mesmo MD5; configurações iguais; nenhum `sk-` no Logcat.
 
+## 3n. Fase 3.6: preparação do envio automático real com três questões (2026-10-29, não commitada)
+
+**Publicação da 3.5:** push de `670804c` para `origin/questvision/fase-1`, confirmado com
+`git ls-remote`; a `main` continua em `2f10e46`; sem merge nem coautoria.
+
+**Envio real automático continua travado:** o app liga `AutoSendPolicy` a `LockedAutoSendPolicy`.
+Nenhuma chamada real foi feita nesta etapa.
+
+**Implementado (com testes, sem chamadas reais):**
+
+1. **Teto de 3 por sessão:** `AutoSendPolicy.maxRequestsPerSession`. `TrialAutoSendPolicy` (pronta,
+   **não ligada**) permite envio real com teto de 3 (`TRIAL_MAX_REQUESTS_PER_SESSION`), qualquer que
+   seja a configuração do usuário (vale o menor dos dois).
+2. **Pendentes antigas isoladas:** `startSession(id, …)`. A fila só aceita questões cujo `session_id`
+   é o da sessão atual; as 28 pendentes de sessões anteriores (27 + a mantida) nunca entram.
+3. **Consentimento explícito:**
+   - com envio real possível, "Iniciar monitoramento" mostra os termos (modelo, máximo da sessão,
+     restante em 24 h, quando para, "pendentes anteriores nunca são enviadas");
+   - **Cancelar** não inicia nada;
+   - uma sessão iniciada sem consentimento só captura (`NOT_AUTHORIZED`).
+4. **Limites:** 10 por 24 h (global, no banco) e 3 por sessão. Ao atingir qualquer um, o envio para
+   pelo resto da sessão; a captura continua.
+5. **Resultado desconhecido** (`UNKNOWN`) nunca é reenviado, nem numa nova sessão.
+6. **Dados preservados:** nada é apagado automaticamente (ver Fases 3.4 e 3.5).
+7. **Registro por requisição** (`ai_requests`): id da resposta, início, fim, tokens (com cache e cache
+   de 12 h), nível, resultado, tamanho do recorte. O custo é calculado a partir deles.
+8. **Interrupção automática** (pelo resto da sessão):
+   - erro de autenticação ou de crédito (`API_ERROR`);
+   - limite atingido;
+   - perda de conexão ou tempo esgotado (`CONNECTION`);
+   - custo desconhecido (`UNKNOWN_COST`, **novo**: resposta sem uso informado ou nível sem preço).
+9. **Pausa, retomada e encerramento** cobertos por testes.
+10. **Logcat:** só a linha de métricas `QuestVisionAi`.
+
+**Testes:**
+
+- **JVM: 272/272** ✅. Novos:
+  - `AutoTrialTest` (7): teto de 3 com configuração 10, sem consentimento só captura, pendentes
+    antigas nunca enviadas, custo desconhecido, erro de autenticação ou crédito, conexão sem reenvio,
+    registro de cada requisição;
+  - `aRealSession_asksForConsent_andDecliningStartsNothing`.
+- **Instrumentados no M52: 35/35** ✅.
+- **Integridade no M52:** banco v3 íntegro; 50 questões (28 pendentes), 4 sessões e 2 registros
+  idênticos ao backup de 2026-10-29; 50 fotos, chave e configurações iguais. O app instalado não foi
+  atualizado nesta etapa.
+- **Bateria no momento:** 28 %, carregando, **42,6 °C**.
+
 ## 4. Funcionalidades implementadas
 
 - Identidade QuestVision AI (nome do app, `applicationId` `com.questvision.ai`, título na tela).

@@ -15,6 +15,7 @@
  */
 package com.questvision.camera.ai
 
+import com.questvision.camera.RealSessionTerms
 import com.questvision.camera.data.AiStatus
 import com.questvision.camera.data.AnalysisMode
 import com.questvision.camera.data.QuestionEntity
@@ -32,9 +33,12 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Whether automatic analysis may make real, billed requests to OpenAI. */
+/** Whether automatic analysis may make real, billed requests to OpenAI, and how many per session at most. */
 interface AutoSendPolicy {
     val realRequestsAllowed: Boolean
+
+    /** A hard cap per session on top of the user's setting (the lower of the two applies). */
+    val maxRequestsPerSession: Int
 }
 
 /**
@@ -47,7 +51,23 @@ class LockedAutoSendPolicy
     @Inject
     constructor() : AutoSendPolicy {
         override val realRequestsAllowed: Boolean = false
+        override val maxRequestsPerSession: Int = 0
     }
+
+/**
+ * Phase 3.6, prepared but **not bound**: the supervised trial of real automatic requests, at most three
+ * per session, each session started only after the user's explicit consent. Binding it in place of
+ * [LockedAutoSendPolicy] (`AiModule`) is the step that needs the user's authorization.
+ */
+class TrialAutoSendPolicy
+    @Inject
+    constructor() : AutoSendPolicy {
+        override val realRequestsAllowed: Boolean = true
+        override val maxRequestsPerSession: Int = TRIAL_MAX_REQUESTS_PER_SESSION
+    }
+
+/** Requests per session in the supervised trial of real automatic sending. */
+const val TRIAL_MAX_REQUESTS_PER_SESSION = 3
 
 enum class AutoPhase {
     /** No monitoring session. */
@@ -86,6 +106,12 @@ enum class AutoPauseReason {
 
     /** OpenAI refused the requests (key, region, credits, rate, parameters): the next ones would fail too. */
     API_ERROR,
+
+    /** A request's cost could not be computed (no usage, unknown tier): nothing more until it is checked. */
+    UNKNOWN_COST,
+
+    /** Real requests are possible but the session was started without the user's consent: capture only. */
+    NOT_AUTHORIZED,
 }
 
 /** What the automatic flow did last, for the session panel. Question numbers as read by the OCR. */
@@ -194,6 +220,28 @@ class AutoAnalysisCoordinator
         // Why sending stopped for the rest of the session (limits, errors); null while it may send.
         private var halted: AutoPauseReason? = null
 
+        // Only questions captured in this session are ever sent: earlier PENDING ones never are.
+        private var sessionId: String? = null
+
+        /** Starting a session with real requests needs the user's explicit consent (see [startSession]). */
+        val needsConsentToStart: Boolean get() = policy.realRequestsAllowed
+
+        /** What a session with real requests may do, for the consent shown before it starts. */
+        suspend fun sessionTerms(): RealSessionTerms {
+            val config = settings.load()
+            return RealSessionTerms(
+                model = config.primaryModel.id,
+                maxRequests = sessionLimit(),
+                leftToday = (config.requestsPerDay - questions.aiRequestsInLimitWindow()).coerceAtLeast(0),
+            )
+        }
+
+        /** The most requests a session may make: the user's setting, capped by the policy. */
+        fun sessionLimit(): Int {
+            val setting = settings.load().analysesPerSession
+            return if (policy.realRequestsAllowed) minOf(setting, policy.maxRequestsPerSession) else setting
+        }
+
         // Another (manual) analysis held the single request slot; retried on the next kick.
         private var busy = false
 
@@ -202,16 +250,35 @@ class AutoAnalysisCoordinator
             this.scope = scope
         }
 
-        fun startSession() {
+        /**
+         * Starts session [id] (the label in its captures' file names; null accepts any question, for
+         * tests). With real requests possible, [consented] must be the user's explicit "yes" for this
+         * session; without it the session only captures.
+         */
+        fun startSession(
+            id: String? = null,
+            consented: Boolean = false,
+        ) {
             queue.clear()
             seen.clear()
             active = true
             paused = false
-            halted = null
+            sessionId = id
+            halted = if (policy.realRequestsAllowed && !consented) AutoPauseReason.NOT_AUTHORIZED else null
             _state.value =
                 AutoAnalysisState(
-                    phase = if (worker?.isActive == true) AutoPhase.ANALYZING else AutoPhase.WAITING,
-                    sessionLimit = settings.load().analysesPerSession,
+                    phase =
+                        if (worker?.isActive ==
+                            true
+                        ) {
+                            AutoPhase.ANALYZING
+                        } else if (halted != null) {
+                            AutoPhase.PAUSED
+                        } else {
+                            AutoPhase.WAITING
+                        },
+                    pauseReason = halted,
+                    sessionLimit = sessionLimit(),
                     realRequestsAllowed = policy.realRequestsAllowed,
                 )
         }
@@ -245,6 +312,8 @@ class AutoAnalysisCoordinator
             assessment: QuestionAssessment,
         ) {
             if (!active || !assessment.usable || !seen.add(question.id)) return
+            // A question from another session (the pending backlog) is never sent automatically.
+            if (sessionId != null && question.sessionId != sessionId) return
             if (!settings.load().processAutomaticCaptures) return
             queue.addLast(Item(question.id, assessment.mode, question.questionNumber ?: assessment.questionNumber))
             _state.update { it.copy(queued = queue.size, lastEvent = AutoEvent.Queued(assessment.questionNumber)) }
@@ -303,7 +372,7 @@ class AutoAnalysisCoordinator
                     continue
                 }
                 val config = settings.load()
-                if (_state.value.requests >= config.analysesPerSession) {
+                if (_state.value.requests >= sessionLimit()) {
                     selfPause(AutoPauseReason.SESSION_LIMIT)
                     break
                 }
@@ -344,14 +413,24 @@ class AutoAnalysisCoordinator
                                     ?.let { alternativeText(row.ocrText, it) },
                             needsReview = result.answer.needsReview,
                         )
-                    countRequest(item.questionId) { it.copy(answered = it.answered + 1, lastEvent = answered, lastAnswer = answered) }
+                    val cost =
+                        countRequest(item.questionId) { it.copy(answered = it.answered + 1, lastEvent = answered, lastAnswer = answered) }
+                    // An answer without a computable cost (no usage, unknown tier): stop until it is checked.
+                    if (cost == null) selfPause(AutoPauseReason.UNKNOWN_COST)
                 }
 
                 is AnalysisResult.Failed -> {
-                    countRequest(item.questionId) {
-                        it.copy(lastEvent = AutoEvent.Failed(item.questionId, item.questionNumber, result.error))
+                    val cost =
+                        countRequest(item.questionId) {
+                            it.copy(lastEvent = AutoEvent.Failed(item.questionId, item.questionNumber, result.error))
+                        }
+                    val reason = pauseReasonFor(result.error)
+                    when {
+                        reason != null -> selfPause(reason)
+
+                        // Billed usage was reported but can't be priced.
+                        cost == null && hasUsage(item.questionId) -> selfPause(AutoPauseReason.UNKNOWN_COST)
                     }
-                    pauseReasonFor(result.error)?.let(::selfPause)
                 }
 
                 is AnalysisResult.Rejected -> {
@@ -382,17 +461,26 @@ class AutoAnalysisCoordinator
             }
         }
 
-        /** Counts a request that was made and adds its observed cost from the stored usage. */
+        private suspend fun hasUsage(questionId: String): Boolean = questions.aiRequestsFor(questionId).firstOrNull()?.inputTokens != null
+
+        /** Counts a request that was made and adds its observed cost from the stored usage; returns that cost. */
         private suspend fun countRequest(
             questionId: String,
             event: (AutoAnalysisState) -> AutoAnalysisState,
-        ) {
+        ): Double? {
             val request = questions.aiRequestsFor(questionId).firstOrNull()
             val cost =
                 request?.let {
                     observedCostUsd(
                         AiModel.fromId(it.model),
-                        TokenUsage(it.inputTokens, it.cachedTokens, it.outputTokens, it.reasoningTokens, it.cacheWriteTokens),
+                        TokenUsage(
+                            it.inputTokens,
+                            it.cachedTokens,
+                            it.outputTokens,
+                            it.reasoningTokens,
+                            it.cacheWriteTokens,
+                            it.cacheWrite12hTokens,
+                        ),
                         it.serviceTier,
                     )
                 }
@@ -405,6 +493,7 @@ class AutoAnalysisCoordinator
                     ),
                 )
             }
+            return cost
         }
 
         /** Stops sending for the rest of the session; capturing goes on. */

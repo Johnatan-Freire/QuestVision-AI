@@ -190,4 +190,9 @@
         <item quantity="one">%1$d captura pendente apagada</item>
         <item quantity="other">%1$d capturas pendentes apagadas</item>
     </plurals>
+    <string name="questvision_auto_paused_unknown_cost">IA pausada: o custo de um envio não pôde ser calculado. As capturas continuam</string>
+    <string name="questvision_auto_paused_not_authorized">Só captura: o envio real não foi autorizado nesta sessão</string>
+    <string name="questvision_real_session_title">Iniciar sessão com envio real?</string>
+    <string name="questvision_real_session_text">Cada questão nova e completa desta sessão será enviada à OpenAI (%1$s) sozinha, sem confirmação por questão, e consome créditos. No máximo %2$d nesta sessão; restam %3$d nas últimas 24 horas. Capturas pendentes anteriores nunca são enviadas. O envio para pelo resto da sessão em perda de conexão, erro de chave ou de crédito, limite atingido ou custo desconhecido; a captura continua.</string>
+    <string name="questvision_real_session_confirm">Iniciar com envio real</string>
 </resources>

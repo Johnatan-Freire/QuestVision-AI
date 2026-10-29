@@ -370,10 +370,11 @@ class QuestionAnalyzerDeviceTest {
                     settings,
                     object : AutoSendPolicy {
                         override val realRequestsAllowed = true
+                        override val maxRequestsPerSession = 10
                     },
                 ).apply {
                     attach(this@runBlocking)
-                    startSession()
+                    startSession(consented = true)
                 }
             val screen = { n: Int ->
                 RecognizedText(
@@ -403,10 +404,11 @@ class QuestionAnalyzerDeviceTest {
                     settings,
                     object : AutoSendPolicy {
                         override val realRequestsAllowed = true
+                        override val maxRequestsPerSession = 10
                     },
                 ).apply {
                     attach(this@runBlocking)
-                    startSession()
+                    startSession(consented = true)
                 }
             // Both test questions share their text (only the number differs): either is "the same question".
             assertTrue(again.findSentToAi(first.ocrText) != null)

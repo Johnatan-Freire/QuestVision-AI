@@ -72,6 +72,7 @@ internal class FakeAiClient(
 /** Lets tests decide whether automatic analysis may send (the app's policy is locked). */
 internal class FixedAutoSendPolicy(
     override var realRequestsAllowed: Boolean,
+    override val maxRequestsPerSession: Int = 10,
 ) : AutoSendPolicy
 
 /** The automatic analysis over [repository], with simulated OpenAI, key and image encoder. */
@@ -82,11 +83,12 @@ internal fun autoAnalysis(
     allowed: Boolean = false,
     keys: ApiKeySource = FakeKeySource(),
     images: QuestionImageEncoder = FakeImageEncoder(),
+    policy: AutoSendPolicy = FixedAutoSendPolicy(allowed),
 ) = AutoAnalysisCoordinator(
     QuestionAnalyzer(repository, keys, client, images, settings),
     repository,
     settings,
-    FixedAutoSendPolicy(allowed),
+    policy,
 )
 
 internal class FakeImageEncoder(

@@ -74,6 +74,15 @@ enum class Notice {
     PENDING_CLEANED,
 }
 
+/** What a session with real automatic requests may do, shown before the user consents. */
+data class RealSessionTerms(
+    val model: String,
+    /** At most this many requests in the session. */
+    val maxRequests: Int,
+    /** Requests still allowed in the rolling 24 hours. */
+    val leftToday: Int,
+)
+
 sealed interface QuestVisionCameraUiState {
     data object Initial : QuestVisionCameraUiState
 
@@ -98,6 +107,11 @@ sealed interface QuestVisionCameraUiState {
         val pendingCleanup: PendingCleanup? = null,
         /** How many pending captures the last cleanup removed. */
         val cleanedCount: Int = 0,
+        /**
+         * Starting a session with real automatic requests waits for the user's explicit "yes" to
+         * these terms; null when nothing is being asked.
+         */
+        val realSessionTerms: RealSessionTerms? = null,
         /** Stored captures, newest first, while the history is open; `null` when it is closed. */
         val history: List<CaptureEntry>? = null,
         val monitoring: MonitoringState = MonitoringState.IDLE,

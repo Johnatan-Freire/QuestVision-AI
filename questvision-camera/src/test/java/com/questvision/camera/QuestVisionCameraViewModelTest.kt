@@ -18,7 +18,9 @@ package com.questvision.camera
 import com.questvision.camera.ai.AutoEvent
 import com.questvision.camera.ai.AutoPauseReason
 import com.questvision.camera.ai.FakeAiClient
+import com.questvision.camera.ai.FixedAutoSendPolicy
 import com.questvision.camera.ai.InMemoryAiSettingsStore
+import com.questvision.camera.ai.TrialAutoSendPolicy
 import com.questvision.camera.ai.answerJson
 import com.questvision.camera.ai.autoAnalysis
 import com.questvision.camera.ai.completed
@@ -102,14 +104,22 @@ class QuestVisionCameraViewModelTest {
     private val client = FakeAiClient(completed())
     private val settings = InMemoryAiSettingsStore(AiSettings(firstCallConfirmed = true))
 
-    private fun newViewModel(allowRequests: Boolean = false) =
-        CaptureRepository(root, dispatcher)
-            .let { captures ->
-                val repository = QuestionRepository(dao, requests, DirectTransactions, captures, dispatcher)
-                QuestVisionCameraViewModel(captures, ocr, repository, autoAnalysis(repository, client, settings, allowRequests))
-            }.apply {
-                onCameraStatusChanged(CameraStatus.ACTIVE)
-            }
+    private fun newViewModel(
+        allowRequests: Boolean = false,
+        trial: Boolean = false,
+    ) = CaptureRepository(root, dispatcher)
+        .let { captures ->
+            val repository = QuestionRepository(dao, requests, DirectTransactions, captures, dispatcher)
+            val policy = if (trial) TrialAutoSendPolicy() else FixedAutoSendPolicy(allowRequests)
+            QuestVisionCameraViewModel(
+                captures,
+                ocr,
+                repository,
+                autoAnalysis(repository, client, settings, allowRequests, policy = policy),
+            )
+        }.apply {
+            onCameraStatusChanged(CameraStatus.ACTIVE)
+        }
 
     private val QuestVisionCameraViewModel.state
         get() = uiState.value as QuestVisionCameraUiState.Previewing
@@ -474,6 +484,7 @@ class QuestVisionCameraViewModelTest {
         client.replyWith(completed(answerJson(answer = listOf("B"), number = 1)), completed(answerJson(answer = listOf("C"), number = 2)))
         val viewModel = newViewModel(allowRequests = true)
         viewModel.startMonitoring()
+        viewModel.confirmRealSession()
 
         viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1))
         viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 2))
@@ -494,12 +505,14 @@ class QuestVisionCameraViewModelTest {
     fun aQuestionAnalyzedInAnEarlierSession_isNotSentAgain() {
         val first = newViewModel(allowRequests = true)
         first.startMonitoring()
+        first.confirmRealSession()
         first.cameraSaves(first.showUntilCaptureRequested(seed = 2))
         first.stopMonitoring()
         assertEquals(1, client.calls)
 
         val viewModel = newViewModel(allowRequests = true)
         viewModel.startMonitoring()
+        viewModel.confirmRealSession()
         val again =
             viewModel.showUntilCaptureRequested(
                 seed = 3,
@@ -519,6 +532,7 @@ class QuestVisionCameraViewModelTest {
     fun anIncompleteQuestion_isKept_butNotSent() {
         val viewModel = newViewModel(allowRequests = true)
         viewModel.startMonitoring()
+        viewModel.confirmRealSession()
         val cut = OcrScreens.screen(1).let { it.copy(lines = it.lines.dropLast(3)) }
 
         viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1, text = cut))
@@ -534,6 +548,7 @@ class QuestVisionCameraViewModelTest {
     fun withRealAutomaticRequestsLocked_nothingLeavesTheDevice() {
         val viewModel = newViewModel(allowRequests = false)
         viewModel.startMonitoring()
+        viewModel.confirmRealSession()
 
         viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1))
 
@@ -561,6 +576,7 @@ class QuestVisionCameraViewModelTest {
         }
         val viewModel = newViewModel(allowRequests = true)
         viewModel.startMonitoring()
+        viewModel.confirmRealSession()
 
         viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1))
         viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 2))
@@ -584,6 +600,7 @@ class QuestVisionCameraViewModelTest {
     fun pausingTheSession_holdsCaptureAndAnalysis_andResumingContinues() {
         val viewModel = newViewModel(allowRequests = true)
         viewModel.startMonitoring()
+        viewModel.confirmRealSession()
         viewModel.pauseMonitoring()
 
         assertEquals(MonitoringState.PAUSED, viewModel.state.monitoring)
@@ -609,6 +626,7 @@ class QuestVisionCameraViewModelTest {
     fun aNegatedVariantOfTheQuestion_isNotTakenForADuplicate() {
         val viewModel = newViewModel()
         viewModel.startMonitoring()
+        viewModel.confirmRealSession()
         val correct =
             OcrScreens.Question(
                 "Questão 04 — Redes",
@@ -631,6 +649,7 @@ class QuestVisionCameraViewModelTest {
     fun analyzedQuestions_andTheirPhotos_surviveARestart() {
         val viewModel = newViewModel(allowRequests = true)
         viewModel.startMonitoring()
+        viewModel.confirmRealSession()
         val file = viewModel.showUntilCaptureRequested(seed = 1)
         viewModel.cameraSaves(file)
         viewModel.stopMonitoring()
@@ -655,6 +674,7 @@ class QuestVisionCameraViewModelTest {
     fun discardingDuringAnAnalysis_isRefused_withANotice() {
         val viewModel = newViewModel()
         viewModel.startMonitoring()
+        viewModel.confirmRealSession()
         val file = viewModel.showUntilCaptureRequested(seed = 1)
         viewModel.cameraSaves(file)
         val row = dao.questions.single()
@@ -673,6 +693,7 @@ class QuestVisionCameraViewModelTest {
     fun anAnsweredQuestionWithoutItsPhoto_stillOpens() {
         val viewModel = newViewModel()
         viewModel.startMonitoring()
+        viewModel.confirmRealSession()
         val file = viewModel.showUntilCaptureRequested(seed = 1)
         viewModel.cameraSaves(file)
         val row = dao.questions.single()
@@ -694,6 +715,7 @@ class QuestVisionCameraViewModelTest {
     fun theManualCleanup_showsAPreview_andRemovesOnlyAfterConfirmation() {
         val viewModel = newViewModel()
         viewModel.startMonitoring()
+        viewModel.confirmRealSession()
         val first = viewModel.showUntilCaptureRequested(seed = 1).also { viewModel.cameraSaves(it) }
         val second = viewModel.showUntilCaptureRequested(seed = 2).also { viewModel.cameraSaves(it) }
 
@@ -710,5 +732,39 @@ class QuestVisionCameraViewModelTest {
         assertEquals(2, viewModel.state.cleanedCount)
         assertTrue(dao.questions.isEmpty())
         assertFalse(first.exists() || second.exists())
+    }
+
+    // Phase 3.6: a session with real requests starts only after explicit consent to its terms.
+    @Test
+    fun aRealSession_asksForConsent_andDecliningStartsNothing() {
+        val viewModel = newViewModel(trial = true)
+
+        viewModel.startMonitoring()
+
+        with(viewModel.state.realSessionTerms!!) {
+            assertEquals("gpt-6-luna", model)
+            assertEquals(3, maxRequests)
+            assertEquals(10, leftToday)
+        }
+        assertEquals(MonitoringState.IDLE, viewModel.state.monitoring)
+
+        viewModel.declineRealSession()
+        assertNull(viewModel.state.realSessionTerms)
+        assertEquals(MonitoringState.IDLE, viewModel.state.monitoring)
+        assertEquals(0, client.calls)
+
+        viewModel.startMonitoring()
+        viewModel.confirmRealSession()
+        assertEquals(MonitoringState.MONITORING, viewModel.state.monitoring)
+        viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1))
+        assertEquals(1, client.calls)
+
+        // Pause, resume and stop behave as in any session.
+        viewModel.pauseMonitoring()
+        assertEquals(MonitoringState.PAUSED, viewModel.state.monitoring)
+        viewModel.resumeMonitoring()
+        viewModel.stopMonitoring()
+        assertEquals(MonitoringState.IDLE, viewModel.state.monitoring)
+        assertEquals(1, client.calls)
     }
 }

@@ -149,7 +149,36 @@ class QuestVisionCameraViewModel
                 )
         }
 
-        fun startMonitoring() =
+        /**
+         * Starts monitoring. When the session could make real automatic requests, it first shows the
+         * terms and waits for [confirmRealSession]; nothing starts on its own.
+         */
+        fun startMonitoring() {
+            val state = _uiState.value as? QuestVisionCameraUiState.Previewing ?: return
+            val startsNewSession = monitoringSession.state == MonitoringState.IDLE || monitoringSession.state == MonitoringState.ERROR
+            if (startsNewSession && autoAnalysis.needsConsentToStart && state.realSessionTerms == null) {
+                viewModelScope.launch {
+                    val terms = autoAnalysis.sessionTerms()
+                    updatePreviewing { it.copy(realSessionTerms = terms) }
+                }
+                return
+            }
+            beginMonitoring(consented = false)
+        }
+
+        /** The user accepted the terms of a session with real automatic requests. */
+        fun confirmRealSession() {
+            if ((_uiState.value as? QuestVisionCameraUiState.Previewing)?.realSessionTerms == null) return
+            updatePreviewing { it.copy(realSessionTerms = null) }
+            beginMonitoring(consented = true)
+        }
+
+        /** The user declined: no session starts. */
+        fun declineRealSession() {
+            updatePreviewing { it.copy(realSessionTerms = null) }
+        }
+
+        private fun beginMonitoring(consented: Boolean) =
             updateMonitoring {
                 val startsNewSession =
                     monitoringSession.state == MonitoringState.IDLE ||
@@ -160,8 +189,9 @@ class QuestVisionCameraViewModel
                     val label = formatSessionLabel(startedAt)
                     sessionLabel = label
                     viewModelScope.launch { questionRepository.startSession(label, startedAt) }
-                    // Starting the session is the consent to analyze its questions, within the limits.
-                    autoAnalysis.startSession()
+                    // Only this session's questions may be analyzed, within the limits; real requests
+                    // also need the consent given for this very session.
+                    autoAnalysis.startSession(label, consented)
                 }
             }
 

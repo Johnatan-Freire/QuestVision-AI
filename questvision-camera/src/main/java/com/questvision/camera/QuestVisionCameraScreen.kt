@@ -210,6 +210,9 @@ fun QuestVisionCameraScreen(
                     }
                 }
                 if (state.review == null && !state.reviewPhotoMissing && showAnalysis) showAnalysis = false
+                state.realSessionTerms?.let { terms ->
+                    RealSessionDialog(terms = terms, onConfirm = viewModel::confirmRealSession, onDismiss = viewModel::declineRealSession)
+                }
                 state.pendingCleanup?.let { preview ->
                     PendingCleanupDialog(
                         preview = preview,
@@ -465,6 +468,26 @@ private fun SidePanel(
             }
         }
     }
+}
+
+/**
+ * The explicit consent before a session that sends its questions to OpenAI on its own: model, the
+ * cap per session, what is left in 24 hours, and when it stops. Nothing is sent per question after
+ * this, so nothing starts without it.
+ */
+@Composable
+private fun RealSessionDialog(
+    terms: RealSessionTerms,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.questvision_real_session_title)) },
+        text = { Text(stringResource(R.string.questvision_real_session_text, terms.model, terms.maxRequests, terms.leftToday)) },
+        confirmButton = { TextButton(onClick = onConfirm) { Text(stringResource(R.string.questvision_real_session_confirm)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.questvision_cleanup_cancel)) } },
+    )
 }
 
 /**

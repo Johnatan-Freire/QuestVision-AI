@@ -192,4 +192,9 @@
         <item quantity="one">%1$d pending capture deleted</item>
         <item quantity="other">%1$d pending captures deleted</item>
     </plurals>
+    <string name="questvision_auto_paused_unknown_cost">AI paused: a request\'s cost could not be computed. Capturing goes on</string>
+    <string name="questvision_auto_paused_not_authorized">Capture only: real sending was not authorized for this session</string>
+    <string name="questvision_real_session_title">Start a session with real sending?</string>
+    <string name="questvision_real_session_text">Each new, complete question of this session will be sent to OpenAI (%1$s) on its own, with no confirmation per question, and uses credits. At most %2$d in this session; %3$d left in the last 24 hours. Earlier pending captures are never sent. Sending stops for the rest of the session on a lost connection, a key or credit error, a limit, or an unknown cost; capturing goes on.</string>
+    <string name="questvision_real_session_confirm">Start with real sending</string>
 </resources>

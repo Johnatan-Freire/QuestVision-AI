@@ -69,7 +69,8 @@ class AutoAnalysisCoordinatorTest {
         repository: QuestionRepository = this.repository,
     ) = autoAnalysis(repository, client, settings, allowed, keys).apply {
         attach(scope)
-        startSession()
+        // The user's explicit consent for this session (required whenever real requests are possible).
+        startSession(consented = true)
     }
 
     /** An automatic capture of question [number] (1–3), recorded PENDING with its OCR text. */
@@ -190,7 +191,7 @@ class AutoAnalysisCoordinatorTest {
             assertEquals(AutoPauseReason.CONNECTION, auto.state.value.pauseReason)
 
             // Only a new session sends again, and never the ambiguous question.
-            auto.startSession()
+            auto.startSession(consented = true)
             auto.submit(first, assessment(1))
             auto.submit(second, assessment(2))
 
@@ -305,7 +306,7 @@ class AutoAnalysisCoordinatorTest {
                     FixedAutoSendPolicy(true),
                 ).apply {
                     attach(this@runTest)
-                    startSession()
+                    startSession(consented = true)
                 }
             val q = question(1)
             val asImage = assessment(1).copy(visualContent = true)
@@ -327,7 +328,7 @@ class AutoAnalysisCoordinatorTest {
             val auto =
                 AutoAnalysisCoordinator(analyzer, repository, settings, FixedAutoSendPolicy(true)).apply {
                     attach(this@runTest)
-                    startSession()
+                    startSession(consented = true)
                 }
             val manual = question(1)
             val automatic = question(2)
