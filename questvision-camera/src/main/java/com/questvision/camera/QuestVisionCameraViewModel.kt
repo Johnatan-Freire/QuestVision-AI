@@ -19,8 +19,13 @@ import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.questvision.camera.ai.AutoAnalysisCoordinator
+import com.questvision.camera.ai.QuestionAssessment
+import com.questvision.camera.ai.assessQuestion
 import com.questvision.camera.data.AiStatus
+import com.questvision.camera.data.QuestionEntity
 import com.questvision.camera.data.QuestionRepository
+import com.questvision.camera.data.plainText
 import com.questvision.camera.detection.CaptureTicket
 import com.questvision.camera.detection.FrameMetrics
 import com.questvision.camera.detection.LumaFrame
@@ -51,6 +56,9 @@ import javax.inject.Inject
 private const val DETECTION_TAG = "QuestVisionDetect"
 private const val OCR_TAG = "QuestVisionOcr"
 
+/** How often the free storage is checked while monitoring. */
+private const val ROOM_CHECK_INTERVAL_MS = 5_000L
+
 /** A recognition taking longer than this counts as failed. */
 private const val OCR_TIMEOUT_MS = 15_000L
 
@@ -61,6 +69,7 @@ class QuestVisionCameraViewModel
         private val captureRepository: CaptureRepository,
         private val textRecognition: TextRecognitionEngine,
         private val questionRepository: QuestionRepository,
+        private val autoAnalysis: AutoAnalysisCoordinator,
     ) : ViewModel(),
         CameraSessionListener {
         private val _uiState =
@@ -87,6 +96,18 @@ class QuestVisionCameraViewModel
         // When the in-flight automatic capture was requested, to log the decision → photo latency.
         private var autoCaptureRequestedAtNanos = 0L
 
+        // Free-space check, at most every few seconds (a filesystem call per frame is wasteful).
+        private var roomCheckedAtMs = Long.MIN_VALUE
+        private var hasRoom = true
+
+        private fun hasRoomForCaptures(nowMs: Long): Boolean {
+            if (roomCheckedAtMs == Long.MIN_VALUE || nowMs - roomCheckedAtMs >= ROOM_CHECK_INTERVAL_MS || nowMs < roomCheckedAtMs) {
+                roomCheckedAtMs = nowMs
+                hasRoom = captureRepository.hasRoomForCaptures()
+            }
+            return hasRoom
+        }
+
         // Label of the current monitoring session, recorded in automatic captures' file names.
         private var sessionLabel: String? = null
 
@@ -95,6 +116,12 @@ class QuestVisionCameraViewModel
         private var autoCapture: Pair<CaptureTicket, File>? = null
 
         init {
+            // Requests run in this scope: leaving the screen cancels one in flight (recorded as such).
+            // A limit or an error stops only the sending: the camera keeps capturing (capture-only).
+            autoAnalysis.attach(viewModelScope)
+            viewModelScope.launch {
+                autoAnalysis.state.collect { auto -> updatePreviewing { it.copy(autoAnalysis = auto) } }
+            }
             viewModelScope.launch {
                 // Repair what an interruption may have left between files and database (and import
                 // captures from before the database), then apply retention.
@@ -132,16 +159,28 @@ class QuestVisionCameraViewModel
                     val label = formatSessionLabel(startedAt)
                     sessionLabel = label
                     viewModelScope.launch { questionRepository.startSession(label, startedAt) }
+                    // Starting the session is the consent to analyze its questions, within the limits.
+                    autoAnalysis.startSession()
                 }
             }
 
-        fun pauseMonitoring() = updateMonitoring { monitoringSession.pause() }
+        fun pauseMonitoring() =
+            updateMonitoring {
+                monitoringSession.pause()
+                autoAnalysis.pause()
+            }
 
-        fun resumeMonitoring() = updateMonitoring { monitoringSession.resume() }
+        fun resumeMonitoring() =
+            updateMonitoring {
+                monitoringSession.resume()
+                autoAnalysis.resume()
+            }
 
         fun stopMonitoring() =
             updateMonitoring {
                 monitoringSession.stop()
+                // Queued questions stay PENDING for manual use; a request in flight completes.
+                autoAnalysis.endSession()
                 // An unverified photo is never kept as a valid capture.
                 verificationJob?.cancel()
                 sessionLabel?.let { label ->
@@ -207,7 +246,10 @@ class QuestVisionCameraViewModel
         override fun onCameraStatusChanged(status: CameraStatus) {
             // Frames stop when the camera closes (app in background, screen left): pause the session
             // so it never resumes analyzing on its own.
-            if (status == CameraStatus.CLOSED) monitoringSession.pause()
+            if (status == CameraStatus.CLOSED) {
+                monitoringSession.pause()
+                autoAnalysis.pause()
+            }
             updatePreviewing { it.copy(cameraStatus = status).withMonitoring() }
         }
 
@@ -230,6 +272,12 @@ class QuestVisionCameraViewModel
 
         override fun onFrameAnalyzed(frame: LumaFrame) {
             val state = _uiState.value as? QuestVisionCameraUiState.Previewing ?: return
+            if (monitoringSession.state.isAnalyzing && !hasRoomForCaptures(frame.timestampMs)) {
+                monitoringSession.pause()
+                autoAnalysis.pause()
+                _uiState.value = state.copy(notice = Notice.STORAGE_LOW).withMonitoring()
+                return
+            }
             val canCaptureNow = state.pendingCapture == null && state.cameraStatus == CameraStatus.ACTIVE
             val startedNanos = System.nanoTime()
             val ticket = monitoringSession.onFrame(frame, canCaptureNow)
@@ -309,11 +357,13 @@ class QuestVisionCameraViewModel
                     val startedNanos = System.nanoTime()
                     var decided = false
                     var recognized: RecognizedText? = null
+                    var assessment: QuestionAssessment? = null
                     try {
                         val text =
                             try {
                                 val raw = withTimeout(OCR_TIMEOUT_MS) { textRecognition.recognize(file) }
                                 recognized = raw
+                                assessment = assessQuestion(raw)
                                 TextFingerprint.of(raw)
                             } catch (exc: TimeoutCancellationException) {
                                 Log.w(OCR_TAG, "OCR timed out for ${file.name}")
@@ -325,7 +375,12 @@ class QuestVisionCameraViewModel
                                 null
                             }
                         val elapsedMs = (System.nanoTime() - startedNanos) / 1_000_000
-                        val decision = text?.let { monitoringSession.onTextRecognized(ticket, it) }
+                        val decision =
+                            text?.let {
+                                // The signature keeps near-identical questions ("correta" / "incorreta") apart.
+                                val signed = TextFingerprint(it.lines, assessment?.signature)
+                                monitoringSession.onTextRecognized(ticket, signed, complete = assessment?.usable == true)
+                            }
                         decided = true
                         when {
                             text == null -> {
@@ -341,7 +396,7 @@ class QuestVisionCameraViewModel
 
                             else -> {
                                 logDecision(file, text, decision, elapsedMs)
-                                applyDecision(ticket, file, decision, recognized)
+                                applyDecision(ticket, file, decision, recognized, assessment)
                             }
                         }
                     } finally {
@@ -351,17 +406,39 @@ class QuestVisionCameraViewModel
                 }
         }
 
+        /**
+         * Applies a verified photo: a complete new question is recorded and handed to the automatic
+         * analysis, unless the AI already saw it (then the fresh photo is dropped, like a duplicate of
+         * this session); an incomplete one is recorded for manual use, not sent, and a better capture
+         * of it is awaited; duplicates and unreadable photos are deleted.
+         */
         private suspend fun applyDecision(
             ticket: CaptureTicket,
             file: File,
             decision: TextDecision,
             recognized: RecognizedText?,
+            assessment: QuestionAssessment?,
         ) {
             if (decision.keep) {
-                // A new question: recorded with its OCR text, waiting for the AI (phase 3.4).
-                val recorded =
-                    record(file, CaptureOrigin.AUTOMATIC, sessionLabel, ticket.sequence, recognized, AiStatus.PENDING)
-                if (recorded) notify(Notice.AUTO_CAPTURE_SAVED)
+                if (decision.verdict == TextVerdict.NEW_QUESTION && recognized != null) {
+                    val earlier = autoAnalysis.findSentToAi(plainText(recognized))
+                    if (earlier != null) {
+                        captureRepository.delete(file)
+                        autoAnalysis.reportAlreadyAnalyzed(earlier.questionNumber ?: assessment?.questionNumber)
+                        notify(Notice.ALREADY_ANALYZED)
+                        return
+                    }
+                }
+                val row = record(file, CaptureOrigin.AUTOMATIC, sessionLabel, ticket.sequence, recognized, AiStatus.PENDING)
+                if (row != null && assessment != null) {
+                    if (assessment.usable) {
+                        notify(Notice.AUTO_CAPTURE_SAVED)
+                        autoAnalysis.submit(row, assessment)
+                    } else {
+                        notify(Notice.INCOMPLETE_SAVED)
+                        autoAnalysis.reportIncomplete(assessment)
+                    }
+                }
                 onCaptureStored()
             } else {
                 captureRepository.delete(file)
@@ -411,7 +488,7 @@ class QuestVisionCameraViewModel
             sequence: Int?,
             ocr: RecognizedText?,
             aiStatus: AiStatus,
-        ): Boolean {
+        ): QuestionEntity? {
             val capturedAt = parseCaptureEntry(file, isPreserved = false).capturedAtMs
             val result = questionRepository.recordCapture(file, origin, sessionId, sequence, capturedAt, ocr, aiStatus)
             result.exceptionOrNull()?.let { error ->
@@ -419,7 +496,7 @@ class QuestVisionCameraViewModel
                 Log.w(DETECTION_TAG, "could not record ${file.name}: ${error.javaClass.simpleName}")
                 notify(Notice.RECORD_FAILED)
             }
-            return result.isSuccess
+            return result.getOrNull()
         }
 
         /** Applies retention after a new capture and refreshes an open history. */
@@ -462,6 +539,7 @@ class QuestVisionCameraViewModel
                 autoCaptureCount = monitoringSession.autoCaptureCount,
                 monitoringStats = monitoringSession.stats,
                 session = sessionLabel,
+                autoAnalysis = this@QuestVisionCameraViewModel.autoAnalysis.state.value,
             )
 
         private inline fun updateMonitoring(action: () -> Unit) {

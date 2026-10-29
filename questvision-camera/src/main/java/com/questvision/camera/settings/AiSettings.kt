@@ -67,6 +67,11 @@ data class AiSettings(
      * A local brake, not a spend cap: the hard cap is the OpenAI project's limit.
      */
     val requestsPerDay: Int = 10,
+    /**
+     * Automatic analyses per monitoring session, on top of [requestsPerDay]: the session pauses itself
+     * when either is reached, so a screen left in front of the camera can't keep spending.
+     */
+    val analysesPerSession: Int = 10,
     /** `max_output_tokens`: visible answer plus reasoning. Too low ends in an incomplete answer. */
     val maxOutputTokens: Int = 1_500,
     /** Longest edge of the photo sent in image mode. */
@@ -76,6 +81,7 @@ data class AiSettings(
 ) {
     companion object {
         val requestsPerDayOptions = listOf(5, 10, 20, 50)
+        val analysesPerSessionOptions = listOf(3, 5, 10)
         val maxOutputTokensOptions = listOf(800, 1_500, 3_000)
         val imageMaxDimensionOptions = listOf(1_280, 1_600, 2_048)
     }
@@ -116,6 +122,10 @@ class SharedPreferencesAiSettingsStore
                     preferences
                         .getInt(REQUESTS_PER_DAY, defaults.requestsPerDay)
                         .takeIf { it in AiSettings.requestsPerDayOptions } ?: defaults.requestsPerDay,
+                analysesPerSession =
+                    preferences
+                        .getInt(ANALYSES_PER_SESSION, defaults.analysesPerSession)
+                        .takeIf { it in AiSettings.analysesPerSessionOptions } ?: defaults.analysesPerSession,
                 maxOutputTokens =
                     preferences
                         .getInt(MAX_OUTPUT_TOKENS, defaults.maxOutputTokens)
@@ -137,6 +147,7 @@ class SharedPreferencesAiSettingsStore
                 .putBoolean(FLEX, settings.flexProcessing)
                 .putString(BUDGET, settings.monthlyBudgetUsd.toString())
                 .putInt(REQUESTS_PER_DAY, settings.requestsPerDay)
+                .putInt(ANALYSES_PER_SESSION, settings.analysesPerSession)
                 .putInt(MAX_OUTPUT_TOKENS, settings.maxOutputTokens)
                 .putInt(IMAGE_MAX_DIMENSION, settings.imageMaxDimension)
                 .putBoolean(FIRST_CALL_CONFIRMED, settings.firstCallConfirmed)
@@ -151,6 +162,7 @@ class SharedPreferencesAiSettingsStore
             const val FLEX = "flex_processing"
             const val BUDGET = "monthly_budget_usd"
             const val REQUESTS_PER_DAY = "requests_per_day"
+            const val ANALYSES_PER_SESSION = "analyses_per_session"
             const val MAX_OUTPUT_TOKENS = "max_output_tokens"
             const val IMAGE_MAX_DIMENSION = "image_max_dimension"
             const val FIRST_CALL_CONFIRMED = "first_call_confirmed"

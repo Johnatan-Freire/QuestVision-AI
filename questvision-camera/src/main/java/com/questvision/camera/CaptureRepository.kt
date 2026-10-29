@@ -39,6 +39,9 @@ private const val CAPTURE_EXTENSION = "jpg"
 /** Unpreserved captures beyond this many (newest first) are deleted. Preserved ones are never pruned. */
 internal const val MAX_RECENT_CAPTURES = 20
 
+/** Free space below which automatic capturing pauses (about 100 photos of the M52). */
+internal const val MIN_FREE_BYTES = 300L * 1024 * 1024
+
 /** Longest edge of the bitmap decoded for on-screen review; the JPEG on disk keeps full resolution. */
 private const val REVIEW_MAX_DIMENSION = 2048
 
@@ -171,6 +174,16 @@ class CaptureRepository internal constructor(
                     relativePath(file)
                 }
         }
+
+    /**
+     * Whether there is room for more automatic captures. Questions waiting for or analyzed by the AI
+     * are never pruned, so a long capture-only session grows storage; below this the session pauses
+     * rather than fail captures or crowd the phone.
+     */
+    fun hasRoomForCaptures(minFreeBytes: Long = MIN_FREE_BYTES): Boolean {
+        val volume = generateSequence(captureDirectory) { it.parentFile }.firstOrNull { it.exists() } ?: return true
+        return volume.usableSpace >= minFreeBytes
+    }
 
     /** Every stored capture file, preserved or not. */
     suspend fun allCaptureFiles(): List<File> = withContext(ioDispatcher) { listCaptures(captureDirectory) + listCaptures(keptDirectory) }

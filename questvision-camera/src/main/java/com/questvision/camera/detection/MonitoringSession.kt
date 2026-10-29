@@ -68,6 +68,8 @@ data class MonitoringStats(
     val unreadableIgnored: Int = 0,
     /** Photos whose text could not be read (OCR error or timeout); deleted, retried, not counted. */
     val recognitionFailures: Int = 0,
+    /** New questions kept but not complete or legible enough to send automatically (also in [capturesSaved]). */
+    val incompleteCaptures: Int = 0,
     /** Changes that settled back onto the accepted content (bumps, passing hands). */
     val changesReverted: Int = 0,
     /** Results of captures from an ended session, ignored. */
@@ -80,7 +82,7 @@ data class TextDecision(
     val comparison: TextComparison,
 ) {
     /** Keep the photo and count it; otherwise delete it. */
-    val keep: Boolean get() = verdict == TextVerdict.NEW_QUESTION
+    val keep: Boolean get() = verdict == TextVerdict.NEW_QUESTION || verdict == TextVerdict.INCOMPLETE
 }
 
 /**
@@ -118,6 +120,10 @@ class MonitoringSession(
     // Text of every question accepted in this session.
     private val acceptedTexts = ArrayList<TextFingerprint>()
 
+    // Incomplete captures of this session: a repeat of one is dropped, so scrolling over a partly
+    // visible question doesn't store it again and again. Never used against complete captures.
+    private val incompleteTexts = ArrayList<TextFingerprint>()
+
     fun start() {
         if (state != MonitoringState.IDLE && state != MonitoringState.ERROR) return
         sessionId++
@@ -127,6 +133,7 @@ class MonitoringSession(
         inFlight = null
         awaitingText = false
         acceptedTexts.clear()
+        incompleteTexts.clear()
         stats = MonitoringStats()
         consecutiveFailures = 0
         state = MonitoringState.MONITORING
@@ -236,14 +243,26 @@ class MonitoringSession(
     /**
      * Decides a verified photo from its [text]. Returns null for a stale ticket (session ended or
      * restarted meanwhile). New text is counted; duplicate or unreadable text is not (the caller
-     * deletes the photo), but the scene becomes the visual reference so it isn't re-proposed.
+     * deletes the photo), but the scene becomes the visual reference so it isn't re-proposed. New text
+     * whose question is not [complete] is kept as INCOMPLETE but not remembered as accepted, so a
+     * better capture of the same question (scrolled, sharper) is still new.
      */
     fun onTextRecognized(
         ticket: CaptureTicket,
         text: TextFingerprint,
+        complete: Boolean = true,
     ): TextDecision? {
         val pending = takeVerification(ticket) ?: return null
-        val comparison = textMatcher.compare(text, acceptedTexts)
+        val matched = textMatcher.compare(text, acceptedTexts)
+        val comparison =
+            when {
+                matched.verdict != TextVerdict.NEW_QUESTION || complete -> matched
+
+                // The same incomplete screen as before (up to OCR noise): nothing new to keep.
+                textMatcher.compare(text, incompleteTexts).verdict == TextVerdict.DUPLICATE -> matched.copy(verdict = TextVerdict.DUPLICATE)
+
+                else -> matched.copy(verdict = TextVerdict.INCOMPLETE)
+            }
         detector.accept(pending.second)
         consecutiveFailures = 0
         stats =
@@ -251,6 +270,12 @@ class MonitoringSession(
                 TextVerdict.NEW_QUESTION -> {
                     acceptedTexts += text
                     stats.copy(capturesSaved = stats.capturesSaved + 1)
+                }
+
+                TextVerdict.INCOMPLETE -> {
+                    incompleteTexts += text
+                    if (incompleteTexts.size > MAX_INCOMPLETE_REFERENCES) incompleteTexts.removeAt(0)
+                    stats.copy(capturesSaved = stats.capturesSaved + 1, incompleteCaptures = stats.incompleteCaptures + 1)
                 }
 
                 TextVerdict.DUPLICATE -> {
@@ -305,3 +330,6 @@ class MonitoringSession(
         }
     }
 }
+
+/** Incomplete captures remembered per session for dropping repeats (oldest forgotten first). */
+private const val MAX_INCOMPLETE_REFERENCES = 30

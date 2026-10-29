@@ -86,6 +86,9 @@ enum class AnalysisRejection {
     /** This question is already being analyzed. */
     ALREADY_PROCESSING,
 
+    /** Another question is being analyzed: one request at a time in the whole app. */
+    ANOTHER_IN_PROGRESS,
+
     /** The local limit of requests per 24 hours was reached (counted in the database, survives restarts). */
     REQUEST_LIMIT,
 
@@ -94,4 +97,10 @@ enum class AnalysisRejection {
 
     /** The photo could not be read. */
     IMAGE_UNAVAILABLE,
+
+    /**
+     * Automatic image mode only: the question's region could not be found safely in the photo, so
+     * nothing was sent (the whole photo is never sent automatically). The question stays PENDING.
+     */
+    QUESTION_REGION_NOT_FOUND,
 }

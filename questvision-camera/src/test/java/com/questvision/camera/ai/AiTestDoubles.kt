@@ -15,6 +15,7 @@
  */
 package com.questvision.camera.ai
 
+import com.questvision.camera.data.QuestionRepository
 import com.questvision.camera.data.TokenUsage
 import com.questvision.camera.settings.AiSettings
 import com.questvision.camera.settings.AiSettingsStore
@@ -68,17 +69,42 @@ internal class FakeAiClient(
     }
 }
 
+/** Lets tests decide whether automatic analysis may send (the app's policy is locked). */
+internal class FixedAutoSendPolicy(
+    override var realRequestsAllowed: Boolean,
+) : AutoSendPolicy
+
+/** The automatic analysis over [repository], with simulated OpenAI, key and image encoder. */
+internal fun autoAnalysis(
+    repository: QuestionRepository,
+    client: AiClient = FakeAiClient(completed()),
+    settings: AiSettingsStore = InMemoryAiSettingsStore(),
+    allowed: Boolean = false,
+    keys: ApiKeySource = FakeKeySource(),
+    images: QuestionImageEncoder = FakeImageEncoder(),
+) = AutoAnalysisCoordinator(
+    QuestionAnalyzer(repository, keys, client, images, settings),
+    repository,
+    settings,
+    FixedAutoSendPolicy(allowed),
+)
+
 internal class FakeImageEncoder(
-    var image: EncodedImage? = EncodedImage("data:image/jpeg;base64,/9j/AAAA", 1600, 1200),
+    var image: EncodedImage? = EncodedImage("data:image/jpeg;base64,/9j/AAAA", 1600, 1200, cropped = true),
+    /** Whether the question's region is found in the photo. */
+    var regionFound: Boolean = true,
 ) : QuestionImageEncoder {
     val requests = mutableListOf<Pair<File, Int>>()
+    val regions = mutableListOf<RegionPolicy>()
 
     override suspend fun encode(
         file: File,
         maxDimension: Int,
+        region: RegionPolicy,
     ): EncodedImage? {
         requests += file to maxDimension
-        return image
+        regions += region
+        return if (!regionFound && region == RegionPolicy.QUESTION_ONLY) null else image
     }
 }
 

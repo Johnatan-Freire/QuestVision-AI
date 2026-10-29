@@ -43,12 +43,14 @@ class OcrDecisionLogTest {
     fun theOcrLog_neverContainsRecognizedText() {
         for (number in listOf(2, 3)) {
             val (log, text) = line(number)
-            val lower = log.lowercase(Locale.ROOT)
+            // The log's own words: a leaked word would stand alone, while "com" inside a counter name
+            // such as incompleteCaptures is not a leak.
+            val logWords = log.lowercase(Locale.ROOT).split(Regex("""[^\p{L}\p{N}]+""")).toSet()
             // Every recognized word of three or more characters (the short ones match counters/labels).
             text.tokens
                 .map { it.value }
                 .filter { it.length >= 3 && it.any(Char::isLetter) }
-                .forEach { word -> assertFalse("\"$word\" leaked into: $log", lower.contains(word.lowercase(Locale.ROOT))) }
+                .forEach { word -> assertFalse("\"$word\" leaked into: $log", word.lowercase(Locale.ROOT) in logWords) }
             assertFalse(log.contains("text="))
         }
     }

@@ -109,6 +109,13 @@ fun AiSettingsPanel(
                 optionLabel = { it.toString() },
             )
             SettingsDropdown(
+                label = stringResource(R.string.questvision_settings_analyses_per_session),
+                options = AiSettings.analysesPerSessionOptions,
+                selected = state.settings.analysesPerSession,
+                onSelected = viewModel::selectAnalysesPerSession,
+                optionLabel = { it.toString() },
+            )
+            SettingsDropdown(
                 label = stringResource(R.string.questvision_settings_max_output_tokens),
                 options = AiSettings.maxOutputTokensOptions,
                 selected = state.settings.maxOutputTokens,

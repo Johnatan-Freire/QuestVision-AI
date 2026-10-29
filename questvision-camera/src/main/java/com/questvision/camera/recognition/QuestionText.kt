@@ -25,10 +25,31 @@ data class RecognizedWord(
     val confidence: Float,
 )
 
-/** OCR output: lines in reading order, each a list of words. */
+/** Where a recognized line is, as fractions of the image's width and height (upright). */
+data class LineBox(
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float,
+) {
+    val height: Float get() = bottom - top
+}
+
+/**
+ * OCR output: lines in reading order, each a list of words, and, when the engine reports them, each
+ * line's [boxes] (same order; empty when unknown, as for text rebuilt from storage).
+ */
 data class RecognizedText(
     val lines: List<List<RecognizedWord>>,
-)
+    val boxes: List<LineBox?> = emptyList(),
+    /**
+     * Clockwise degrees the image was turned before reading (the phone held sideways or upside down
+     * relative to the screen); [boxes] refer to the turned image.
+     */
+    val contentRotation: Int = 0,
+) {
+    fun boxOf(line: Int): LineBox? = boxes.getOrNull(line)
+}
 
 /** Thresholds of the text comparison. Starting points, to be tuned from the `QuestVisionOcr` logs. */
 data class TextMatchConfig(
@@ -52,6 +73,11 @@ data class TextMatchConfig(
  */
 class TextFingerprint(
     val lines: List<List<Token>>,
+    /**
+     * What tells this question apart from a near-identical one (negations, numbers, operators,
+     * alternatives), when the caller found the question on screen; see [QuestionSignature].
+     */
+    val signature: QuestionSignature? = null,
 ) {
     data class Token(
         val value: String,
@@ -70,6 +96,7 @@ class TextFingerprint(
         fun of(
             text: RecognizedText,
             config: TextMatchConfig = TextMatchConfig(),
+            signature: QuestionSignature? = null,
         ): TextFingerprint =
             TextFingerprint(
                 text.lines
@@ -78,6 +105,7 @@ class TextFingerprint(
                             normalizeToken(word.text)?.let { Token(it, word.confidence >= config.minConfidence) }
                         }
                     }.filter { it.isNotEmpty() },
+                signature,
             )
     }
 }
@@ -91,6 +119,13 @@ enum class TextVerdict {
 
     /** Too little confident text to decide (blurred, glare, blank screen). */
     UNREADABLE,
+
+    /**
+     * New text, but the question on it is not complete or legible enough to send (see
+     * `assessQuestion`). Set by the monitoring session, never by the matcher: the photo is kept, but
+     * not as the session's reference for this question, so a better capture of it still counts as new.
+     */
+    INCOMPLETE,
 }
 
 /** How a capture's text compares with the closest earlier capture. */
@@ -121,21 +156,22 @@ class QuestionTextMatcher(
         if (candidate.confidentCount < config.minReadableTokens) {
             return TextComparison(TextVerdict.UNREADABLE, 0, 0f, 0, -1, candidate.confidentCount)
         }
-        // The closest earlier capture is the one leaving the fewest new words.
-        val closest =
-            history
-                .withIndex()
-                .map { (index, reference) -> index to novelty(candidate, reference) }
-                .minByOrNull { (_, novelty) -> novelty.count }
+        val compared = history.withIndex().map { (index, reference) -> Triple(index, reference, novelty(candidate, reference)) }
+        // A duplicate needs a reference with almost no new words AND nothing that changes the answer:
+        // "correta" vs "incorreta", 10 vs 12, + vs ×, a different alternative. OCR tolerance must never
+        // merge two different questions, since a duplicate's photo is deleted.
+        val duplicateOf =
+            compared
+                .filter { (_, reference, novelty) -> !isNew(novelty, candidate) && !candidate.signature.differsFrom(reference.signature) }
+                .minByOrNull { it.third.count }
+        // Otherwise the closest earlier capture is the one leaving the fewest new words (for the logs).
+        val closest = duplicateOf ?: compared.minByOrNull { it.third.count }
         val novelty =
-            closest?.second
+            closest?.third
                 ?: Novelty(candidate.confidentCount, candidate.lines.maxOfOrNull { it.size } ?: 0, emptyList(), emptyList())
         val ratio = novelty.count.toFloat() / candidate.confidentCount
-        val isNew =
-            novelty.longestRun >= config.minNovelRun ||
-                (novelty.count >= config.minNovelTokens && ratio >= config.minNovelRatio)
         return TextComparison(
-            verdict = if (isNew) TextVerdict.NEW_QUESTION else TextVerdict.DUPLICATE,
+            verdict = if (duplicateOf == null) TextVerdict.NEW_QUESTION else TextVerdict.DUPLICATE,
             novelTokens = novelty.count,
             novelRatio = ratio,
             longestNovelRun = novelty.longestRun,
@@ -145,6 +181,13 @@ class QuestionTextMatcher(
             longestRunWords = novelty.runWords,
         )
     }
+
+    private fun isNew(
+        novelty: Novelty,
+        candidate: TextFingerprint,
+    ): Boolean =
+        novelty.longestRun >= config.minNovelRun ||
+            (novelty.count >= config.minNovelTokens && novelty.count.toFloat() / candidate.confidentCount >= config.minNovelRatio)
 
     private data class Novelty(
         val count: Int,

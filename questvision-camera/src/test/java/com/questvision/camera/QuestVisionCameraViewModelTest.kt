@@ -15,7 +15,16 @@
  */
 package com.questvision.camera
 
+import com.questvision.camera.ai.AutoEvent
+import com.questvision.camera.ai.AutoPauseReason
+import com.questvision.camera.ai.FakeAiClient
+import com.questvision.camera.ai.InMemoryAiSettingsStore
+import com.questvision.camera.ai.answerJson
+import com.questvision.camera.ai.autoAnalysis
+import com.questvision.camera.ai.completed
+import com.questvision.camera.data.AiRequestEntity
 import com.questvision.camera.data.AiStatus
+import com.questvision.camera.data.AnalysisMode
 import com.questvision.camera.data.DirectTransactions
 import com.questvision.camera.data.FakeAiRequestDao
 import com.questvision.camera.data.FakeQuestionDao
@@ -25,6 +34,7 @@ import com.questvision.camera.detection.SyntheticScreens
 import com.questvision.camera.recognition.OcrScreens
 import com.questvision.camera.recognition.RecognizedText
 import com.questvision.camera.recognition.TextRecognitionEngine
+import com.questvision.camera.settings.AiSettings
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -85,14 +95,18 @@ class QuestVisionCameraViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun newViewModel() =
+    /** Outlives each ViewModel too: the request log in the same database. */
+    private val requests = FakeAiRequestDao()
+
+    /** Plays OpenAI for the automatic analysis; nothing is sent unless a test allows it. */
+    private val client = FakeAiClient(completed())
+    private val settings = InMemoryAiSettingsStore(AiSettings(firstCallConfirmed = true))
+
+    private fun newViewModel(allowRequests: Boolean = false) =
         CaptureRepository(root, dispatcher)
             .let { captures ->
-                QuestVisionCameraViewModel(
-                    captures,
-                    ocr,
-                    QuestionRepository(dao, FakeAiRequestDao(), DirectTransactions, captures, dispatcher),
-                )
+                val repository = QuestionRepository(dao, requests, DirectTransactions, captures, dispatcher)
+                QuestVisionCameraViewModel(captures, ocr, repository, autoAnalysis(repository, client, settings, allowRequests))
             }.apply {
                 onCameraStatusChanged(CameraStatus.ACTIVE)
             }
@@ -452,5 +466,187 @@ class QuestVisionCameraViewModelTest {
         restarted.openHistory()
         assertEquals(listOf(file), restarted.state.history!!.map { it.file })
         assertEquals(AiStatus.NOT_REQUESTED, dao.questions.single().aiStatus)
+    }
+
+    // Phase 3.4, end to end: the session's only input is "start"; the camera, the OCR and OpenAI are simulated.
+    @Test
+    fun aSession_detectsValidatesAndAnalyzes_withoutAnyTouch() {
+        client.replyWith(completed(answerJson(answer = listOf("B"), number = 1)), completed(answerJson(answer = listOf("C"), number = 2)))
+        val viewModel = newViewModel(allowRequests = true)
+        viewModel.startMonitoring()
+
+        viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1))
+        viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 2))
+
+        assertEquals(2, client.calls)
+        assertTrue(dao.questions.all { it.aiStatus == AiStatus.ANSWERED })
+        with(viewModel.state.autoAnalysis) {
+            assertEquals(2, answered)
+            assertEquals(2, lastAnswer!!.questionNumber)
+            assertEquals(listOf("C"), lastAnswer!!.answer)
+            assertEquals("DNS", lastAnswer!!.alternativeText)
+        }
+        assertEquals(AnalysisMode.TEXT, client.inputs.first().mode)
+    }
+
+    // 2: the same question in a later session: the AI already saw it, so nothing is sent or kept.
+    @Test
+    fun aQuestionAnalyzedInAnEarlierSession_isNotSentAgain() {
+        val first = newViewModel(allowRequests = true)
+        first.startMonitoring()
+        first.cameraSaves(first.showUntilCaptureRequested(seed = 2))
+        first.stopMonitoring()
+        assertEquals(1, client.calls)
+
+        val viewModel = newViewModel(allowRequests = true)
+        viewModel.startMonitoring()
+        val again =
+            viewModel.showUntilCaptureRequested(
+                seed = 3,
+                text = OcrScreens.screen(OcrScreens.questions.getValue(2), clock = "19:01:44"),
+            )
+        viewModel.cameraSaves(again)
+
+        assertEquals(1, client.calls)
+        assertEquals(Notice.ALREADY_ANALYZED, viewModel.state.notice)
+        assertFalse(again.exists())
+        assertEquals(1, dao.questions.size)
+        assertTrue(viewModel.state.autoAnalysis.lastEvent is AutoEvent.AlreadyAnalyzed)
+    }
+
+    // 3 + 5: an incomplete question is kept for manual use but never sent.
+    @Test
+    fun anIncompleteQuestion_isKept_butNotSent() {
+        val viewModel = newViewModel(allowRequests = true)
+        viewModel.startMonitoring()
+        val cut = OcrScreens.screen(1).let { it.copy(lines = it.lines.dropLast(3)) }
+
+        viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1, text = cut))
+
+        assertEquals(0, client.calls)
+        assertEquals(Notice.INCOMPLETE_SAVED, viewModel.state.notice)
+        assertEquals(AiStatus.PENDING, dao.questions.single().aiStatus)
+        assertTrue(viewModel.state.autoAnalysis.lastEvent is AutoEvent.Incomplete)
+    }
+
+    // The app as shipped: real automatic requests are locked, so a validated question waits for "Analisar".
+    @Test
+    fun withRealAutomaticRequestsLocked_nothingLeavesTheDevice() {
+        val viewModel = newViewModel(allowRequests = false)
+        viewModel.startMonitoring()
+
+        viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1))
+
+        assertEquals(0, client.calls)
+        assertEquals(AiStatus.PENDING, dao.questions.single().aiStatus)
+        assertEquals(1, viewModel.state.autoAnalysis.awaitingAuthorization)
+        assertFalse(viewModel.state.autoAnalysis.realRequestsAllowed)
+    }
+
+    // 11: capture-only. At the 24-hour limit nothing more is sent, but the camera keeps monitoring and
+    // new questions keep being captured, stored and kept for later.
+    @Test
+    fun atTheLimit_theCameraKeepsCapturing_andNothingIsSent() {
+        kotlinx.coroutines.runBlocking {
+            repeat(10) {
+                requests.insert(
+                    AiRequestEntity(
+                        questionId = "earlier-$it",
+                        model = "gpt-6-luna",
+                        mode = AnalysisMode.TEXT,
+                        startedAt = System.currentTimeMillis(),
+                    ),
+                )
+            }
+        }
+        val viewModel = newViewModel(allowRequests = true)
+        viewModel.startMonitoring()
+
+        viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1))
+        viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 2))
+
+        assertEquals(0, client.calls)
+        assertEquals(AutoPauseReason.DAILY_LIMIT, viewModel.state.autoAnalysis.pauseReason)
+        assertEquals(MonitoringState.MONITORING, viewModel.state.monitoring)
+        assertEquals(2, viewModel.state.autoCaptureCount)
+        assertEquals(2, dao.questions.count { it.aiStatus == AiStatus.PENDING })
+        assertTrue(dao.questions.all { File(root, it.imagePath).exists() })
+
+        // Pausing and resuming the monitoring keeps the analysis stopped.
+        viewModel.pauseMonitoring()
+        viewModel.resumeMonitoring()
+        assertEquals(AutoPauseReason.DAILY_LIMIT, viewModel.state.autoAnalysis.pauseReason)
+        assertEquals(0, client.calls)
+    }
+
+    // 12: pausing the session stops capturing and sending; resuming continues both.
+    @Test
+    fun pausingTheSession_holdsCaptureAndAnalysis_andResumingContinues() {
+        val viewModel = newViewModel(allowRequests = true)
+        viewModel.startMonitoring()
+        viewModel.pauseMonitoring()
+
+        assertEquals(MonitoringState.PAUSED, viewModel.state.monitoring)
+        repeat(8) {
+            viewModel.onFrameAnalyzed(
+                SyntheticScreens.frame(SyntheticScreens.question(1), clockMs).also {
+                    clockMs +=
+                        SyntheticScreens.config.sampleIntervalMs
+                },
+            )
+        }
+        assertNull(viewModel.state.pendingCapture)
+
+        viewModel.resumeMonitoring()
+        viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1))
+
+        assertEquals(1, client.calls)
+        assertEquals(AiStatus.ANSWERED, dao.questions.single().aiStatus)
+    }
+
+    // Near-identical questions ("correta" / "incorreta") are both kept within a session.
+    @Test
+    fun aNegatedVariantOfTheQuestion_isNotTakenForADuplicate() {
+        val viewModel = newViewModel()
+        viewModel.startMonitoring()
+        val correct =
+            OcrScreens.Question(
+                "Questão 04 — Redes",
+                "Sobre o protocolo DNS, qual alternativa está correta?",
+                listOf("A) Usa a porta 53", "B) Criptografa tudo", "C) Substitui o IP", "D) Só funciona em LAN"),
+            )
+
+        viewModel.cameraSaves(viewModel.showUntilCaptureRequested(seed = 1, text = OcrScreens.screen(correct)))
+        val negated = correct.copy(statement = correct.statement.replace("correta", "incorreta"))
+        val second = viewModel.showUntilCaptureRequested(seed = 2, text = OcrScreens.screen(negated))
+        viewModel.cameraSaves(second)
+
+        assertTrue(second.exists())
+        assertEquals(2, dao.questions.size)
+        assertEquals(2, viewModel.state.autoCaptureCount)
+    }
+
+    // 13: answered questions and their photos survive restarts and the retention cleanup.
+    @Test
+    fun analyzedQuestions_andTheirPhotos_surviveARestart() {
+        val viewModel = newViewModel(allowRequests = true)
+        viewModel.startMonitoring()
+        val file = viewModel.showUntilCaptureRequested(seed = 1)
+        viewModel.cameraSaves(file)
+        viewModel.stopMonitoring()
+        // Many newer manual captures afterwards.
+        repeat(MAX_RECENT_CAPTURES + 3) { i ->
+            File(root, "capture_20261028_1200%02d_000_manual.jpg".format(i)).apply {
+                writeBytes(byteArrayOf(1))
+                setLastModified(System.currentTimeMillis() + 60_000L + i)
+            }
+        }
+
+        val restarted = newViewModel()
+        restarted.openHistory()
+
+        assertTrue(file.exists())
+        assertEquals(AiStatus.ANSWERED, dao.questions.single { it.imagePath == file.name }.aiStatus)
+        assertTrue(restarted.state.history!!.any { it.file == file })
     }
 }

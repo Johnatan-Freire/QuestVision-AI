@@ -96,6 +96,7 @@ class AiAnalysisViewModelTest {
                     override suspend fun recognize(file: File) = RecognizedText(emptyList())
                 },
                 repository,
+                autoAnalysis(repository, client),
             ).onCameraStatusChanged(CameraStatus.ACTIVE)
             val panel = viewModel()
             panel.select(interrupted)

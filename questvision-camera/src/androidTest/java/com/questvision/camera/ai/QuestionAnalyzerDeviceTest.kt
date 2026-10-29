@@ -16,7 +16,11 @@
 package com.questvision.camera.ai
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.os.Process
+import android.util.Base64
 import androidx.room.Room
 import androidx.room.withTransaction
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -34,6 +38,9 @@ import com.questvision.camera.data.QuestVisionDatabase
 import com.questvision.camera.data.QuestionEntity
 import com.questvision.camera.data.QuestionRepository
 import com.questvision.camera.data.TransactionRunner
+import com.questvision.camera.recognition.MlKitTextRecognitionEngine
+import com.questvision.camera.recognition.RecognizedText
+import com.questvision.camera.recognition.RecognizedWord
 import com.questvision.camera.settings.AiSettings
 import com.questvision.camera.settings.AiSettingsStore
 import com.questvision.camera.settings.ApiKey
@@ -127,21 +134,24 @@ class QuestionAnalyzerDeviceTest {
             clock = { now },
         )
 
-    private fun analyzer(repository: QuestionRepository) =
-        QuestionAnalyzer(
-            repository,
-            object : ApiKeySource {
-                override suspend fun <T> useKey(block: suspend (ApiKey) -> T): T = block(FAKE_KEY)
-            },
-            OpenAiClient(transport),
-            object : QuestionImageEncoder {
-                override suspend fun encode(
-                    file: File,
-                    maxDimension: Int,
-                ): EncodedImage? = null
-            },
-            settings,
-        )
+    private fun analyzer(
+        repository: QuestionRepository,
+        images: QuestionImageEncoder? = null,
+    ) = QuestionAnalyzer(
+        repository,
+        object : ApiKeySource {
+            override suspend fun <T> useKey(block: suspend (ApiKey) -> T): T = block(FAKE_KEY)
+        },
+        OpenAiClient(transport),
+        images ?: object : QuestionImageEncoder {
+            override suspend fun encode(
+                file: File,
+                maxDimension: Int,
+                region: RegionPolicy,
+            ): EncodedImage? = null
+        },
+        settings,
+    )
 
     /** The app after a process death: a new database connection, repository and analyzer. */
     private suspend fun restart(): Pair<QuestionRepository, QuestionAnalyzer> {
@@ -336,6 +346,122 @@ class QuestionAnalyzerDeviceTest {
             transport.reply(ok())
             assertTrue(restartedAnalyzer.analyze(questions[10].id, AnalysisMode.TEXT) is AnalysisResult.Answered)
             assertEquals(11, transport.calls)
+        }
+
+    /**
+     * Phase 3.4 on the device: a monitoring session's automatic analysis over real SQLite and files,
+     * with the real client parsing scripted replies. Each validated question is sent once, one at a
+     * time; a repeated submission and an earlier answered question are not sent again; nothing is
+     * resent after a restart.
+     */
+    @Test
+    fun anAutomaticSession_sendsEachQuestionOnce_andNothingAfterARestart() =
+        runBlocking {
+            val first = storeQuestion(1)
+            val second = storeQuestion(2)
+            transport.reply(ok())
+            val repository = repository().also { it.reconcile() }
+            val auto =
+                AutoAnalysisCoordinator(
+                    analyzer(repository),
+                    repository,
+                    settings,
+                    object : AutoSendPolicy {
+                        override val realRequestsAllowed = true
+                    },
+                ).apply {
+                    attach(this@runBlocking)
+                    startSession()
+                }
+            val screen = { n: Int ->
+                RecognizedText(
+                    "Questão %02d — Redes\n$STATEMENT\nA) DHCP\nB) DNS\nC) FTP\nD) SMTP\nPergunte".format(n).lines().map { line ->
+                        line.split(" ").map { RecognizedWord(it, 0.9f) }
+                    },
+                )
+            }
+
+            auto.submit(first, assessQuestion(screen(1)))
+            auto.submit(second, assessQuestion(screen(2)))
+            auto.submit(first, assessQuestion(screen(1)))
+            kotlinx.coroutines.withTimeout(10_000) {
+                while (auto.state.value.queued > 0 || auto.state.value.phase == AutoPhase.ANALYZING) kotlinx.coroutines.delay(20)
+            }
+
+            assertEquals(2, transport.calls)
+            assertEquals(2, auto.state.value.answered)
+            assertEquals(AiStatus.ANSWERED, repository.question(first.id)!!.aiStatus)
+            assertEquals(AiStatus.ANSWERED, repository.question(second.id)!!.aiStatus)
+
+            val (restarted, restartedAnalyzer) = restart()
+            val again =
+                AutoAnalysisCoordinator(
+                    restartedAnalyzer,
+                    restarted,
+                    settings,
+                    object : AutoSendPolicy {
+                        override val realRequestsAllowed = true
+                    },
+                ).apply {
+                    attach(this@runBlocking)
+                    startSession()
+                }
+            // Both test questions share their text (only the number differs): either is "the same question".
+            assertTrue(again.findSentToAi(first.ocrText) != null)
+            again.submit(restarted.question(first.id)!!, assessQuestion(screen(1)))
+            assertEquals(2, transport.calls)
+            assertEquals(2, restarted.aiRequestsInLimitWindow())
+        }
+
+    /** The real encoder: a 2000×1500 photo goes out as a JPEG downscaled to the setting (1600). */
+    @Test
+    fun imageMode_sendsTheRealPhoto_downscaled() =
+        runBlocking {
+            val question = storeQuestion(1)
+            val file = repository().fileOf(question)
+            Bitmap.createBitmap(2_000, 1_500, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }.let { bitmap ->
+                file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+            }
+            settings.settings = settings.settings.copy(imageMaxDimension = 1_600)
+            transport.reply(ok())
+            val repository = repository().also { it.reconcile() }
+
+            val result =
+                analyzer(
+                    repository,
+                    JpegQuestionImageEncoder(captures, MlKitTextRecognitionEngine(context)),
+                ).analyze(question.id, AnalysisMode.IMAGE)
+
+            assertTrue(result is AnalysisResult.Answered)
+            val dataUrl = Regex("\"image_url\":\"(data:image/jpeg;base64,[^\"]+)\"").find(transport.bodies.single())!!.groupValues[1]
+            val bytes = Base64.decode(dataUrl.substringAfter(","), Base64.DEFAULT)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            assertEquals(1_600, bounds.outWidth)
+            assertEquals(1_200, bounds.outHeight)
+            // The stored photo is only read.
+            assertTrue(file.length() > 0)
+            assertEquals(AnalysisMode.IMAGE, repository.aiRequestsFor(question.id).single().mode)
+        }
+
+    /** A photo missing on disk: the image mode sends nothing, claims nothing and logs nothing. */
+    @Test
+    fun aMissingPhoto_inImageMode_sendsNothing() =
+        runBlocking {
+            val question = storeQuestion(1)
+            val repository = repository().also { it.reconcile() }
+            assertTrue(repository.fileOf(question).delete())
+
+            val result =
+                analyzer(
+                    repository,
+                    JpegQuestionImageEncoder(captures, MlKitTextRecognitionEngine(context)),
+                ).analyze(question.id, AnalysisMode.IMAGE)
+
+            assertEquals(AnalysisResult.Rejected(AnalysisRejection.IMAGE_UNAVAILABLE), result)
+            assertEquals(0, transport.calls)
+            assertEquals(AiStatus.PENDING, repository.question(question.id)!!.aiStatus)
+            assertEquals(0, repository.aiRequestsInLimitWindow())
         }
 
     @Test

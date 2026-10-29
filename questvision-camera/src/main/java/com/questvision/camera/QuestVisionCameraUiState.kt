@@ -16,6 +16,7 @@
 package com.questvision.camera
 
 import android.graphics.Bitmap
+import com.questvision.camera.ai.AutoAnalysisState
 import com.questvision.camera.detection.MonitoringState
 import com.questvision.camera.detection.MonitoringStats
 import java.io.File
@@ -52,6 +53,15 @@ enum class Notice {
 
     /** A photo was saved but its database record failed; it is recovered on the next start. */
     RECORD_FAILED,
+
+    /** An automatic photo showed a question the AI already analyzed; it was discarded, nothing sent. */
+    ALREADY_ANALYZED,
+
+    /** An automatic photo was kept, but its question is incomplete or illegible: not sent, a better capture is awaited. */
+    INCOMPLETE_SAVED,
+
+    /** Little free storage: monitoring paused before a capture could fail. */
+    STORAGE_LOW,
 }
 
 sealed interface QuestVisionCameraUiState {
@@ -79,6 +89,8 @@ sealed interface QuestVisionCameraUiState {
         val session: String? = null,
         /** False when the device can't analyze frames alongside preview and capture. */
         val isMonitoringAvailable: Boolean = true,
+        /** The automatic analysis of the session's questions. */
+        val autoAnalysis: AutoAnalysisState = AutoAnalysisState(),
     ) : QuestVisionCameraUiState {
         val isCapturing: Boolean get() = pendingCapture != null
 

@@ -1044,7 +1044,7 @@ A fila da IA é `questionsWithAiStatus(PENDING)`, em ordem de captura. Os result
 `updateAiStatus` (tentativas e erro) e `saveAiResult` (resposta, modelo, data), e o status do
 Telegram por `updateTelegramStatus`.
 
-## 3k. Fase 3.3: integração manual com a API da OpenAI (2026-10-27, revisada em 2026-10-28, aguardando revisão)
+## 3k. Fase 3.3: integração manual com a API da OpenAI (2026-10-27, aprovada em 2026-10-28, `ef20f8d`)
 
 Sem commit nem push. **Nenhuma chamada real à OpenAI foi feita e nenhum crédito foi consumido**: toda
 a validação usou um cliente falso e um servidor HTTP local. O envio é **só manual** (botão), sem fila
@@ -1525,14 +1525,606 @@ US$ 0,0008). Nenhuma chamada foi feita pelo agente.
   idênticos byte a byte; 32 fotos e a chave cifrada com o mesmo MD5; `integrity_check` ok;
   reconciliação sem remoções; Logcat sem `sk-`.
 
+### Push e decisões (2026-10-28)
+
+- **Push:** `ef20f8d` enviado para `origin/questvision/fase-1` e confirmado com `git ls-remote`. A
+  `main` continua em `2f10e46`, sem merge.
+- **Telemetria:** a configuração do ML Kit foi mantida, sem bloqueios nem mudanças não documentadas.
+- **Questão perdida:** os backups ficam como estão, somente leitura; nenhuma reinserção. Melhoria
+  futura registrada em "Pendências".
+
+### Telemetria observada e limites conhecidos
+
+- **O que sai:** métricas do ML Kit para `firebaselogging.googleapis.com` (HTTPS, `datatransport`/CCT),
+  com:
+  - pacote e versão do app, versão do SDK, idioma e um UUID por instalação;
+  - números de desempenho e de configuração (tempo, formato, resolução, tamanhos, códigos de erro);
+  - país, MCC/MNC, modelo, `fingerprint` do sistema e fuso horário.
+- **O que não sai:** imagens e texto reconhecido (documentação do ML Kit; nenhum texto nos 16
+  eventos lidos no M52).
+- **Limites do que se sabe:**
+  - a fila nunca foi enviada até 2026-10-28 (`num_attempts` = 0), mas o envio pode acontecer
+    quando o agendador do `datatransport` rodar com rede;
+  - o conteúdo binário dos eventos foi lido só como texto legível, sem decodificar o protobuf;
+  - o Google não documenta forma de desativar nem prazo de retenção desses dados.
+
+### Samples e dependências que o QuestVision não usa (lista para decisão; nada removido)
+
+O `:app` inclui os 31 samples com `implementation`, portanto eles entram também no APK de release; a
+navegação só os expõe em builds depuráveis. O `:questvision-camera` usa apenas `:core-camera`,
+`:core-ui`, `text-recognition`, Room, Hilt e `kotlinx-serialization`.
+
+| Remoção | O que sai do APK | Efeito na telemetria | Risco |
+| --- | --- | --- | --- |
+| `camerax-qrscanner`, `camera2-qrscanner` | `mlkit:barcode-scanning` 17.3.0 | deixa de registrar o `BarcodeRegistrar` (houve 1 evento da 17.3.0 na fila) | nenhum para o QuestVision |
+| `camerax-imagelabeling` | `mlkit:image-labeling` | menos um registrador de ML Kit | nenhum |
+| `camerax-greenscreen` | `mlkit:segmentation-selfie` | menos um registrador de ML Kit | nenhum |
+| `camerax-featurecombination` | `camera-feature-combination-query-play-services` | sem consulta ao Play Services | nenhum |
+| `camerax-media3effects` | Media3 `common`/`effect`, `camera-media3-effect` | — | nenhum |
+| demais 25 samples (CameraX e Camera2) | só código das demos; `camera-video`, `camera-extensions` | — | nenhum |
+
+- **Forma segura sugerida:** trocar `implementation(project(":samples:…"))` por `debugImplementation`,
+  com a lista do catálogo filtrada no release. Assim o release fica só com o QuestVision e o debug
+  mantém o catálogo.
+- **Remoção completa:** apagar módulos, `settings.gradle.kts`, `SampleCatalog.kt` e as strings do
+  catálogo. Precisa de ajuste no `AGENTS.md`, que descreve o catálogo.
+- **O que não muda:** o `text-recognition` continua enviando as próprias métricas. A remoção reduz a
+  superfície, mas não zera a telemetria.
+
+### Auditoria específica (2026-10-28)
+
+Testado no código e nos testes indicados; nada mudou no app.
+
+| Cenário | Comportamento | Onde está provado |
+| --- | --- | --- |
+| Painel fechado ou outra foto aberta com a análise em andamento | o `AiAnalysisViewModel` pertence à tela, não ao painel: a análise continua e a resposta tardia é salva na questão certa. A tela só mostra o resultado se a mesma questão estiver aberta (`questionId == id`) | código; `AiAnalysisViewModelTest` |
+| "Cancelar" | o socket é fechado; tentativa `CANCELLED`, questão `FAILED`; uma resposta que chegasse depois não é lida (pode ser cobrada); reenviar pede confirmação | `cancelling_recordsTheAttemptAsCancelled…`, `resendingAfterAnUnknownOutcome…` (JVM) |
+| Saída da tela (Activity finalizada) | `viewModelScope` cancelado: mesmo caminho do "Cancelar" | código |
+| Processo morto durante o envio | próxima abertura: `INTERRUPTED`, sem reenvio, conta no limite de 24 h | JVM e M52 (`aRequestInFlightWhenTheAppDied…`) |
+| Descarte durante a análise | recusado (`delete()` = `false`), foto e linha intactas | `discarding_isRefusedWhileTheAiIsProcessing` (JVM). Limite: a interface fecha a revisão sem avisar que o descarte foi recusado |
+| Foto ausente, modo imagem | `IMAGE_UNAVAILABLE`: nada enviado, nada reservado, nada registrado | JVM (`incompleteOcr_orUnreadablePhoto_sendNothing`) e M52 com o codificador real (`aMissingPhoto_inImageMode_sendsNothing`, novo) |
+| Foto ausente, ao abrir o app | `reconcile()` remove a linha, inclusive com resposta da IA; o `ai_requests` fica | código; risco residual (melhoria futura) |
+| Codificação da imagem | JPEG 85 %, sem EXIF, orientado. A decodificação usa `inSampleSize` em potência de 2 até ≤ 2048 px e depois reduz até a configuração. O tamanho enviado pode ficar abaixo da configuração (foto de 3000 px → 1500 px) | código; M52 (`imageMode_sendsTheRealPhoto_downscaled`, novo: 2000×1500 → 1600×1200) |
+
+### Teste real de imagem (autorizado, pendente)
+
+Uma única chamada autorizada em 2026-10-28, ainda **não executada**:
+
+- **Bloqueio de privacidade:** todas as capturas existentes mostram a barra lateral do ChatGPT,
+  com títulos de conversas pessoais. No modo imagem a tela inteira vai para a OpenAI.
+- **Bloqueio de retenção:** há exatamente 20 capturas não mantidas e não protegidas. Uma captura
+  nova faria a limpeza apagar a mais antiga.
+- **Antes do envio:**
+  - modelo `gpt-6-luna` (Standard);
+  - estimativa do app ≈ US$ 0,0008, **sem a imagem**;
+  - não há fórmula oficial de tokens de imagem para esse modelo; cada 1.000 tokens de entrada custam
+    US$ 0,0001;
+  - a confirmação de primeira chamada não aparece mais: "Analisar" envia direto.
+
 ### Pendências
 
 1. Decidir sobre a telemetria do ML Kit: aviso ao usuário e/ou tirar os samples do APK.
-2. Decidir sobre a recuperação da questão perdida (JSON apenas, ou suporte a questão sem foto).
-3. Medir o modo imagem (tokens reais da foto) com uma segunda chamada, se autorizada.
-4. Conferir o custo observado com o painel de uso da OpenAI.
-5. O painel de análise mostra o custo observado só enquanto a questão existe; o registro em
+2. **Melhoria futura:** preservar a resposta da IA mesmo quando o arquivo da foto estiver ausente
+   (hoje `reconcile()` remove a linha). Exige suporte a "foto ausente" no histórico e na revisão.
+3. **Melhoria futura:** avisar na interface quando um descarte for recusado durante a análise.
+4. Medir o modo imagem (tokens reais da foto): autorizada uma chamada; ver "Teste real de imagem".
+5. Conferir o custo observado com o painel de uso da OpenAI.
+6. O painel de análise mostra o custo observado só enquanto a questão existe; o registro em
    `ai_requests` não aparece na interface depois que a questão é descartada.
+
+## 3l. Fase 3.4: detecção e análise automática de questões (2026-10-28, em desenvolvimento, não commitada)
+
+**Autorização desta etapa:** fluxo automático completo, mas **envios automáticos reais à OpenAI
+desativados**. Validado só com clientes simulados. Chamadas reais continuam apenas pelo "Analisar"
+manual, com as confirmações da Fase 3.3. Sem Telegram, sem commit.
+
+### Diagnóstico do que já existia (reaproveitado sem reescrever)
+
+| Peça | Situação |
+| --- | --- |
+| Câmera e estabilidade (`ScreenChangeDetector`, `MonitoringSession`) | Detecta mudança de tela e só captura com a imagem parada (Fases 2 e 2.5). Mantido. |
+| OCR local (ML Kit, modelo embutido) | Lê cada captura automática. Mantido. |
+| Repetidas na sessão (`QuestionTextMatcher`) | Compara o texto com as questões já aceitas na sessão. Mantido. |
+| Sessões e histórico (Room v2) | `capture_sessions`, `questions`, `ai_requests`. Sem mudança de esquema nesta fase. |
+| OpenAI (`QuestionAnalyzer`, `OpenAiClient`) | Uma requisição por chamada, reserva atômica, sem novas tentativas, limite de 24 h. Mantido. |
+| Proteção de dados | Retenção protege tudo que passou pela IA; descarte recusado em `PROCESSING`; recuperação `INTERRUPTED`. Mantido. |
+
+### O que foi implementado
+
+1. **Validação local (`ai/QuestionAssessment.kt`, `assessQuestion`).** Avalia a questão mais recente
+   da tela e aponta um problema (`AssessmentIssue`) sempre que houver dúvida:
+   - sem título "Questão N";
+   - sem enunciado;
+   - menos de duas alternativas (e nenhum Certo/Errado);
+   - alternativas fora de sequência (A, C… ou não começando em A/1);
+   - lista possivelmente cortada (a última alternativa é a última linha da tela);
+   - pouca confiança no OCR (mais de 15 % das palavras abaixo de 0,5: desfoque, reflexo, movimento).
+
+   **Formatos:** letras (A–E), números (1–5) e julgamento (Certo/Errado, Verdadeiro/Falso).
+
+   **Conteúdo visual:** detectado por palavras como figura, gráfico, tabela, imagem, diagrama, esquema,
+   mapa, charge, tirinha, ilustração e circuito, ou por 6 ou mais símbolos matemáticos.
+
+2. **Sessão (`MonitoringSession`).** O novo veredito `INCOMPLETE` grava a captura, mas não a usa como
+   referência da questão, então uma captura melhor (rolada, mais nítida) ainda conta como nova.
+   Contador `incompleteCaptures`.
+
+3. **Repetidas entre sessões.** Antes de gravar, `findSentToAi` compara o bloco da questão (não a
+   tela inteira) com as questões que já passaram pela IA, usando o mesmo comparador da sessão. Se
+   for repetida, a foto nova é descartada (como as repetidas da sessão), nada é enviado e aparece o
+   aviso "já analisada".
+
+4. **Coordenador (`ai/AutoAnalysisCoordinator.kt`).**
+   - **Fila:** em memória, um envio por vez, na ordem de captura. Cada questão entra uma vez por
+     sessão e só é enviada se ainda estiver `PENDING`.
+   - **Para de enviar sozinho** quando (na rodada 2 o monitoramento deixou de pausar junto; ver
+     "Rodada 2"):
+     - atinge o limite da sessão ou o de 24 h;
+     - falta a chave;
+     - há perda de conexão (resultado desconhecido: nada é reenviado);
+     - há erros que se repetiriam (401, 403, cota, 429, 400).
+   - **Continua para a próxima questão** em 500, resposta inválida, incompleta ou recusada (a questão
+     fica `FAILED`).
+   - **Encerrar a sessão:** esvazia a fila; o envio em andamento termina e é gravado.
+   - **Reinício:** a fila não sobrevive, e nenhuma questão `PENDING` antiga é enviada sozinha.
+   - **Trava de envio real:** `AutoSendPolicy`, ligada no app a `LockedAutoSendPolicy`
+     (`realRequestsAllowed = false`). Com a trava, a questão validada fica "pronta para Analisar".
+
+5. **Interface.**
+   - Status da IA abaixo dos controles: aguardando, analisando, pausada (com o motivo), desativada
+     nesta versão, último evento, análises da sessão/limite, custo observado e última resposta
+     (letra e texto da alternativa).
+   - Novos avisos: "já analisada" e "incompleta".
+   - Nova configuração: "Análises automáticas por sessão" (3, 5 ou 10; padrão 10). O limite de 10 por
+     24 h não foi alterado.
+
+6. **Modo imagem.** O pedido passa a nomear a questão quando o número foi lido ("Responda somente a
+   Questão N."), porque a tela fotografada costuma mostrar o fim da questão anterior.
+
+### Estratégia OCR × imagem (recomendação)
+
+**Opção C, já implementada na escolha do modo:** texto do OCR quando a questão tem alternativas com
+letras e nenhum sinal de conteúdo visual; foto quando há gráfico, tabela, fórmula ou imagem, ou
+quando o formato (números, Certo/Errado) não é levado pelo modo texto.
+
+- **Motivo:** o texto custou 461 tokens de entrada na chamada real. Não há fórmula oficial de
+  tokens de imagem para o `gpt-6-luna` nem medição real; o teste de imagem continua pendente.
+- **Não implementado:** nenhuma chamada dupla de comparação e nenhuma troca automática de texto
+  para imagem depois de uma resposta incerta (custaria uma segunda requisição sem autorização).
+
+### Testes (todos com clientes simulados; nenhuma chamada real)
+
+| Item exigido | Teste |
+| --- | --- |
+| 1. Questão nova e completa | `aNewCompleteQuestion_isSentOnce_andAnswered`, `aSession_detectsValidatesAndAnalyzes_withoutAnyTouch`, `aCompleteLetteredQuestion_isUsable_inTextMode` |
+| 2. Questão repetida | `aQuestionAnalyzedInAnEarlierSession_isNotSentAgain`, `aQuestionAlreadyAnalyzed_isNeverSentAgain`, `sameQuestion_ignoresTheRestOfTheScreen_andOcrNoise` e os testes de repetidas da sessão (já existentes) |
+| 3. Questão incompleta | `alternativesEndingTheScreen_mayBeCut_andWait`, `anIncompleteQuestion_isKept_butNotSent`, `anIncompleteQuestion_isKept_butDoesNotBlockABetterCapture` |
+| 4. Imagem desfocada ou instável | `aBlurredCapture_isNotLegibleEnough`; instabilidade: testes do detector (Fases 2 e 2.5: não captura em movimento) |
+| 5. Alternativas ausentes | `missingOrSkippedAlternatives_areNotComplete`, `anIncompleteQuestion_isNotQueued` |
+| 6. Gráfico ou imagem | `visualContent_switchesToTheImage`, `aQuestionWithAChart_goesAsTheImage` |
+| 7. Duas questões em sequência rápida | `twoQuestionsInQuickSuccession_goOneAtATime_inOrder` |
+| 8. Reinício durante a análise | `aRestartDuringAnAnalysis_isNeverResentAutomatically` (e os da Fase 3.3) |
+| 9. Perda de internet | `aLostConnection_pausesTheSession_andIsNeverRetried` |
+| 10. Resposta inválida | `anInvalidAnswer_failsThatQuestion_andTheNextStillGoes` |
+| 11. Limite diário | `theDailyLimit_pausesTheSession_andSendsNothing`, `theDailyLimit_pausesTheMonitoringToo` (+ limite da sessão) |
+| 12. Pausa e retomada | `pausing_holdsTheQueue_andResumingSendsIt` |
+| 13. Fotos e histórico | `analyzedQuestions_andTheirPhotos_surviveARestart` (+ testes de retenção e descarte) |
+| 14. Chamadas duplicadas | `aNewCompleteQuestion_isSentOnce_andAnswered` (envio repetido), `aQuestionAlreadyAnalyzed_isNeverSentAgain` |
+| 15. Resposta após a troca de questão | `anAnswerArrivingAfterTheQuestionChanged_isStoredOnItsOwnQuestion` |
+| Trava do envio real | `withRealAutomaticRequestsLocked_nothingLeavesTheDevice`, `withoutAuthorizationForRealRequests_nothingIsSent` |
+
+**Resultados:**
+
+- **JVM:** `:questvision-camera:testDebugUnitTest` ✅ **215/215** (eram 181). Novos:
+  - `QuestionAssessmentTest` (11);
+  - `AutoAnalysisCoordinatorTest` (16);
+  - 6 em `QuestVisionCameraViewModelTest`;
+  - 1 em `TextVerificationSessionTest`.
+
+  `OcrDecisionLogTest` passou a comparar palavras inteiras: o novo contador `incompleteCaptures`
+  contém "com", sem vazamento.
+- **Build:** `:app:assembleDebug` ✅, `:questvision-camera:assembleDebugAndroidTest` ✅, `spotlessApply`.
+- **Instrumentados:** o novo `anAutomaticSession_sendsEachQuestionOnce_andNothingAfterARestart`
+  (SQLite e arquivos reais, cliente real com respostas roteirizadas) compila, mas **não foi
+  executado**: o M52 não estava conectado.
+
+### Sessão com 20 questões (comportamento esperado)
+
+- **Como o app está hoje (trava ligada):**
+  - cada questão completa e nova é capturada, lida, validada e gravada como `PENDING`, e aparece
+    "pronta para Analisar";
+  - incompletas são gravadas e marcadas; repetidas de sessões anteriores, descartadas;
+  - **nenhuma requisição sai**; as 20 podem ser analisadas à mão, até 10 por 24 h.
+- **Com o envio automático autorizado (padrões: 10 por sessão, 10 por 24 h, nenhum envio anterior
+  nas 24 h):** comportamento atualizado na rodada 2 (ver "Rodada 2", modo somente captura).
+
+### Consumo da API (sem preços ou medições inventados)
+
+- **Única medição real (modo texto):** 461 tokens de entrada e 75 de saída, ≈ US$ 0,000084
+  (Standard).
+- **Teto por requisição de texto,** pela configuração (1.500 tokens de saída, incluindo raciocínio):
+  ≈ US$ 0,0008. **Máximo de 10 requisições por 24 h** ⇒ teto local ≈ US$ 0,008 por dia em modo
+  texto. Isso é um freio local, não um teto financeiro garantido.
+- **Modo imagem:** desconhecido. Não há fórmula oficial para o modelo nem medição.
+
+### Riscos identificados
+
+- **Validação conservadora demais ou de menos:**
+  - questões sem "Questão N" nunca são enviadas sozinhas;
+  - uma questão cuja última alternativa encosta no fim da tela espera rolagem;
+  - duas questões que diferem só em poucas palavras podem ser tomadas como a mesma.
+- **Modo imagem envia a tela inteira:** inclui a barra lateral do ChatGPT (títulos de conversas
+  pessoais).
+- **Confiança do ML Kit no M52:** não medida; o limiar de 0,5 vem da Fase 2.5.
+- ~~Limite atingido pausa também a captura~~: corrigido na rodada 2 (modo somente captura).
+- **Contagem da sessão:** um envio em andamento ao encerrar e reabrir uma sessão conta na sessão
+  nova (conservador).
+- **Pendências herdadas:** foto ausente remove a linha com resposta; descarte recusado sem aviso.
+
+### O que falta para ativar o envio automático real
+
+1. Rodar os instrumentados no M52 e testar a sessão no aparelho com a trava ligada (só validação).
+2. Teste real de imagem (pendente) para conhecer o custo do modo imagem.
+3. Autorização explícita para trocar `LockedAutoSendPolicy` por uma política liberada, com o
+   aviso de consentimento ao iniciar a sessão.
+4. Decidir o comportamento ao atingir o limite (pausar tudo ou só o envio).
+5. Uma sessão real curta e acompanhada (por exemplo, 3 questões com limite de sessão 3).
+
+### Rodada 2 (2026-10-28): correções pedidas na avaliação
+
+Envio automático real **continua travado** (`LockedAutoSendPolicy`). Nenhuma chamada real, nenhum
+commit. Sem mudança no esquema do banco: nada exigiu migração.
+
+**Defeitos corrigidos:**
+
+1. **Limites paravam a câmera.**
+   - **Agora:** o limite da sessão ou de 24 h, a falta de chave, a perda de conexão e os erros da API
+     param **só o envio**. A câmera continua monitorando, e as questões novas continuam sendo
+     capturadas, guardadas como `PENDING` e mostradas como pendentes (modo somente captura).
+   - **Pausas por limite ou erro são definitivas na sessão:** "Pausar/Retomar" não as levanta, e a
+     liberação da janela de 24 h também não. Só uma nova sessão iniciada pelo usuário volta a enviar.
+2. **Dependência do título "Questão N".**
+   - **Agora:** a questão é localizada pelo conteúdo: o último grupo completo de respostas e, acima
+     dele, o início.
+   - **Formatos:**
+     - A–E ou A–D, nunca presumindo cinco alternativas;
+     - números de 1 a 5;
+     - Certo/Errado e Verdadeiro/Falso;
+     - com ou sem número.
+   - **Sem título,** a linha logo acima das respostas precisa perguntar (terminar em "?" ou ":"; numa
+     assertiva de Certo/Errado, "."), e o enunciado sobe enquanto estiver na mesma coluna e no mesmo
+     parágrafo, pelas posições das linhas que o ML Kit fornece. No texto guardado, sem posições, ele
+     para na frase anterior ou numa linha curta.
+   - **Na dúvida não envia** (`NO_QUESTION_START`): enunciado no topo da foto, sem fronteira clara, ou
+     mais de 8 linhas.
+   - **Sem título vai sempre como imagem recortada,** porque o texto guardado não marca com segurança
+     onde o enunciado começa.
+   - **Corte:** a questão é tratada como possivelmente cortada se encostar na borda de cima ou de
+     baixo da foto (3 %) ou se a última resposta for a última linha.
+3. **Questões quase iguais tomadas como repetidas.**
+   - O comparador tolera ruído de OCR (1–2 letras), então "correta" e "incorreta" pareciam iguais, e
+     "incorreta" contém "correta". Uma repetida da sessão tem a foto apagada.
+   - **Agora** cada questão tem uma assinatura (`QuestionSignature`) que precisa coincidir
+     exatamente:
+     - negações (não, exceto, incorreta, falsa, errada…);
+     - números;
+     - operadores (+, ×, =, <, %…; "-" e "/" só entre dígitos);
+     - alternativas (no máximo 1 caractere diferente a cada 8).
+   - Vale na sessão (comparador) e entre sessões (`sameQuestion`). O título fica fora, porque a mesma
+     questão pode ter outro número.
+   - Assinatura desconhecida não diferencia nada: o comportamento antigo continua valendo.
+4. **Modo imagem enviava a tela inteira.**
+   - **Agora:** `JpegQuestionImageEncoder` endireita a foto e roda o OCR **no mesmo bitmap** que será
+     recortado (as caixas e os pixels coincidem, sem conversão por EXIF), localiza a questão e recorta
+     a união das suas linhas, do início à última resposta. Figuras e tabelas entre elas ficam dentro.
+   - **Margem:** 2 % na horizontal; com conteúdo visual tenta 10 % e cai para 2 %.
+   - **Recusa o recorte** se qualquer outra linha (título de conversa, barra lateral, navegador)
+     entrar mais de 5 % na região, se faltar caixa ou se a região for pequena demais.
+   - **No envio automático** (`RegionPolicy.QUESTION_ONLY`), sem região segura **nada é enviado**: a
+     questão fica `PENDING`, com a rejeição `QUESTION_REGION_NOT_FOUND`.
+   - **No "Analisar" manual com Imagem** (`QUESTION_OR_WHOLE`), recorta quando acha a região; senão
+     envia a foto inteira, como antes, por escolha explícita do usuário.
+   - A foto original nunca é alterada.
+5. **Duas análises simultâneas** (uma manual e uma automática em questões diferentes) eram possíveis.
+   - **Agora** há uma requisição em andamento por vez no app inteiro (`ANOTHER_IN_PROGRESS`). A
+     automática espera a vez sem perder o lugar na fila.
+6. **Armazenamento.**
+   - No modo somente captura as pendentes (protegidas da retenção) se acumulam. A retenção nunca apaga
+     pendentes nem analisadas, e as capturas automáticas não empurram as 20 manuais para fora.
+   - **Novo:** abaixo de 300 MB livres o monitoramento pausa com aviso, antes de uma captura falhar.
+     A verificação acontece a cada 5 s.
+
+### Qualidade do OCR: o que é medido e o que é heurística
+
+| Métrica | Origem | Uso |
+| --- | --- | --- |
+| Confiança por palavra (`Text.Element.getConfidence()`) | **ML Kit (real)**. Documentada só como valor em [0, 1], não como probabilidade calibrada | `LOW_CONFIDENCE`: mais de 15 % das palavras da questão abaixo de 0,5 (**heurística nossa**) |
+| Caixa de cada linha (`Text.Line.getBoundingBox()`) | **ML Kit (real)** | enquadramento, corte nas bordas, coluna e parágrafo do enunciado, região do recorte (**heurísticas nossas**) |
+| Estabilidade | **heurística nossa** (`ScreenChangeDetector`: movimento entre quadros de baixa resolução, tempo parado) | só captura com a imagem parada |
+| Nitidez (`LumaFrame.sharpness`, desvio de passa-alta) | **heurística nossa** | apenas registrada nos logs; o desfoque aparece na confiança do ML Kit |
+| Alternativas, sequência, enunciado, conteúdo visual | **heurísticas nossas** | `assessQuestion` |
+| Repetição em quadros consecutivos | **não implementada** | o OCR roda uma vez por captura; a estabilidade vem dos quadros |
+
+Nenhuma dessas heurísticas é uma pontuação oficial de qualidade.
+
+### Testes da rodada 2
+
+- **JVM:** `:questvision-camera:testDebugUnitTest` ✅ **230/230** (eram 215). Novos:
+  - `QuestionAssessmentTest`: sem título (conteúdo e layout), sem pergunta, texto guardado,
+    Certo/Errado, corte no topo, 4 alternativas, recorte sem a barra lateral, recorte recusado com
+    invasão ou sem caixas, margem maior para conteúdo visual, e negação, número, operador e
+    alternativa diferentes ⇒ questões diferentes;
+  - `AutoAnalysisCoordinatorTest`:
+    - limite da sessão definitivo (inclusive após pausar e retomar);
+    - limite de 24 h que não se libera sozinho;
+    - imagem automática só com região, senão nada;
+    - manual em andamento faz a automática esperar;
+    - conexão: só uma nova sessão volta a enviar;
+  - `QuestVisionCameraViewModelTest`:
+    - no limite a câmera continua capturando;
+    - pausa e retomada;
+    - variante negada não é repetida.
+- **Build:** `:app:assembleDebug` ✅, `:questvision-camera:assembleDebugAndroidTest` ✅, `spotlessApply`.
+- **Instrumentados novos** (compilam; **não executados**: M52 desconectado):
+  - `QuestionOnScreenDeviceTest`: OCR real do ML Kit em telas desenhadas com barra lateral, cobrindo:
+    - questão completa com e sem título;
+    - alternativas cortadas;
+    - repetida × negada;
+    - recorte sem nenhum título da barra lateral, com o OCR da imagem enviada;
+    - sem questão ⇒ nada automático.
+  - `anAutomaticSession_sendsEachQuestionOnce_andNothingAfterARestart`.
+
+### Sessão com 20 questões (rodada 2)
+
+- **Trava ligada (como está):**
+  - todas as questões completas e novas são capturadas e validadas, e ficam pendentes;
+  - incompletas também ficam guardadas, sem envio;
+  - repetidas de questões já analisadas são descartadas;
+  - nada é enviado.
+- **Envio autorizado (10/sessão, 10/24 h):**
+  - as 10 primeiras válidas são enviadas, uma de cada vez, só o recorte quando for imagem;
+  - depois o envio para pelo resto da sessão, e as questões 11 a 20 continuam sendo capturadas e
+    ficam pendentes para análise posterior;
+  - perda de conexão: o envio para sem reenvio, e a câmera segue.
+
+### Riscos de armazenamento e bateria
+
+- **Armazenamento:** cerca de 3,3 MB por foto no M52 (32 fotos = 107 MB). Pendentes e analisadas
+  nunca são apagadas pela retenção, então um uso longo cresce sem limite até a pausa por pouco
+  espaço (300 MB). Falta uma ferramenta de limpeza manual de pendentes antigas.
+- **Bateria e calor:**
+  - quadros de análise de baixa resolução o tempo todo durante a sessão;
+  - uma captura em resolução cheia e um OCR (≈ 0,5 s) por mudança de tela;
+  - no modo imagem, um segundo OCR no envio, para o recorte.
+
+  Uma sessão longa com a tela do celular ligada consome bastante. Não foi medido no M52.
+
+### Auditoria final (rodada 2)
+
+- **Gastos indevidos:**
+  - uma requisição por vez no app;
+  - cada questão no máximo uma vez;
+  - pendente de sessão anterior nunca é enviada sozinha;
+  - pausa definitiva por limite ou erro;
+  - nenhum reenvio após falha ambígua;
+  - imagem automática só com recorte seguro;
+  - trava do envio real ligada.
+- **Perda de dados:**
+  - pendentes e analisadas protegidas da retenção;
+  - descarte recusado em `PROCESSING`;
+  - repetida só é descartada quando a assinatura coincide;
+  - foto original nunca alterada.
+- **Riscos que permanecem:**
+  - linha sem foto ainda é removida no `reconcile()` (melhoria registrada);
+  - descarte recusado sem aviso na tela;
+  - um envio em andamento ao encerrar e reabrir a sessão conta na sessão nova;
+  - o recorte manual pode cair para a foto inteira;
+  - sem título, uma resposta manual em modo texto exige o título (o manual usa imagem).
+- **Logcat:** nenhuma linha nova com texto, chave ou resposta; o coordenador não registra nada.
+- **Pendente para concluir a Fase 3.4:** validação no M52 (instrumentados, instalação por cima,
+  sessão real com a trava ligada). **A Fase 3.4 não está concluída.**
+
+### Rodada 3 (2026-10-28): validação final — **bloqueada no M52**
+
+**Aparelho:** `adb devices` sem nenhum dispositivo, em três verificações durante a rodada. Por isso
+**não foram executados**, e nenhum está aprovado:
+
+- backup dos dados reais e conferência de integridade;
+- instalação da nova versão por cima;
+- testes instrumentados (inclusive os com OCR real);
+- sessão automática simulada no aparelho;
+- integridade após reiniciar.
+
+O app instalado no M52 continua a versão da Fase 3.3 com as correções da auditoria (antes da Fase 3.4), e os
+dados dele não foram tocados nesta rodada. Nenhum processo de espera foi deixado; o servidor ADB foi
+encerrado.
+
+**Formatos de enunciado (feito sem o aparelho, testes JVM):**
+
+| Enunciado (linha logo acima das alternativas) | Com título, antes | Sem título, antes | Sem título, agora |
+| --- | --- | --- | --- |
+| "Qual das alternativas está correta?" | ✅ | ✅ | ✅ |
+| "Assinale a alternativa correta." | ✅ | ❌ falso negativo | ✅ |
+| "Analise as afirmativas e marque a opção adequada." | ✅ | ❌ falso negativo | ✅ |
+| "Considerando o texto apresentado, é correto afirmar que" | ✅ | ❌ falso negativo | ✅ |
+| "… é correto afirmar que..." | ✅ | ❌ falso negativo | ✅ |
+| "Julgue o item a seguir." + assertiva + Certo/Errado | ✅ | ✅ | ✅ |
+| "Os tópicos foram discutidos em sala." (não pergunta) | — | rejeitado | rejeitado (correto) |
+
+**Correções, com base nesse resultado** (sem afrouxar o resto):
+
+- **A linha que pede a resposta** aceita, além de "?" e ":", reticências ("…", "...") e um comando de
+  prova (assinale, marque, indique, escolha, selecione, julgue, identifique, aponte) ou "… afirmar
+  que". Uma frase comum acima de uma lista continua rejeitada.
+- **Coluna:** linhas recuadas (células de tabela) passam a contar como parte da coluna da questão. A
+  barra lateral e as barras do navegador começam mais à esquerda e continuam fora.
+- **Parágrafos:** um vão de até 2,0 alturas de linha une parágrafos do mesmo enunciado; um vão maior
+  encerra (mensagem anterior). **O valor 2,0 não foi medido em telas reais do ChatGPT:** é uma
+  estimativa a validar no M52.
+- **Limite de linhas sem título:** 30 com posições das linhas; 8 no texto guardado (sem posições).
+  **Limitação:** no texto guardado, um enunciado sem título com mais de 8 linhas fica como "início não
+  identificado". Na captura, as posições existem, então isso só afeta a comparação de repetidas e o
+  texto da alternativa mostrado.
+
+**Recorte (testes JVM com layouts sintéticos; no aparelho, só compilado):**
+
+| Situação | Resultado |
+| --- | --- |
+| Questão centralizada | recorte da questão |
+| Barra lateral do ChatGPT | lateral fora (região começa à direita dela) |
+| Barra e abas do navegador | fora (região começa abaixo delas) |
+| Tabela entre enunciado e alternativas | dentro; modo imagem |
+| Gráfico / fórmula | margem maior (10 %) quando nada está ao lado |
+| Questão parcialmente fora da tela | `POSSIBLY_CUT`: não é enviada automaticamente |
+| Título da lateral invadindo a região | recorte recusado ⇒ nada enviado no modo automático |
+
+**Testes:**
+
+- **JVM:** **243/243** ✅. Novos: `QuestionFormatsTest` (13).
+- **Build:** `spotlessCheck` ✅, `:app:assembleDebug` ✅, `:questvision-camera:assembleDebugAndroidTest` ✅.
+- **Instrumentados:** `QuestionOnScreenDeviceTest` ganhou o caso com comando sem título, tabela e
+  barra do navegador, com o OCR da imagem enviada. **Nenhum instrumentado foi executado nesta fase.**
+- **Sessão automática simulada:** coberta só por testes JVM (`aSession_detectsValidatesAndAnalyzes_withoutAnyTouch`,
+  `atTheLimit_theCameraKeepsCapturing_andNothingIsSent`) e por um instrumentado não executado.
+- **Precisão observada:** só sobre os exemplos sintéticos acima; **não há medição em capturas
+  reais**.
+- **Bateria e desempenho:** **não medidos.**
+
+**Para aprovar a Fase 3.4 falta:**
+
+1. Conectar o M52 e fazer backup, integridade, instalação por cima, instrumentados e reinício.
+2. Uma sessão real com a trava ligada (validação, recorte e pendentes), conferindo os vãos entre
+   parágrafos e mensagens do ChatGPT real (o limiar de 2,0).
+3. Medir a bateria numa sessão de 15 a 30 minutos.
+
+### Rodada 4 (2026-10-29): validação no Galaxy M52
+
+**Preparação** (nada destrutivo, nenhuma chamada real):
+
+- **Estado inicial:** app de 2026-10-28 12:15; 32 questões, 2 sessões, 1 registro em `ai_requests`,
+  32 fotos e a chave cifrada, idênticos à referência de 28/10; `integrity_check` ok; banco v2.
+- **Backup novo, somente leitura:** `~/QuestVision-backups/2026-10-29-antes-da-fase-3.4/` (banco,
+  configurações, as 32 fotos com MD5 conferido e a lista de MD5). Os backups anteriores não foram
+  tocados.
+
+**Instalação e testes:**
+
+- **Atualização por cima** (`install -r`) e duas aberturas, duas vezes (antes e depois das correções
+  abaixo): banco, sessões, `ai_requests`, fotos, chave e configurações sempre idênticos; reconciliação
+  sem remoções; nenhum `sk-` no Logcat.
+- **Instrumentados: 31/31** na versão inicial e **33/33** na final (sem `RealCapturesOcrTest`).
+  Incluem:
+  - OCR real em telas desenhadas: com e sem título, cortada, repetida × negada, recorte sem barra
+    lateral e sem barra do navegador, tabela e comando sem título;
+  - fotos giradas 90°/180°/270° e EXIF 6 de cabeça para baixo;
+  - sessão automática sobre SQLite real;
+  - migração, DAO e Keystore.
+- **JVM: 251/251.**
+
+**Sessão real com a trava ligada (2026-10-29 01:47–01:50):** o usuário passou por 7 questões no
+ChatGPT. **Nenhuma requisição à OpenAI** (`ai_requests` continuou com 1 linha).
+
+- **Defeito crítico encontrado:** **as 13 capturas foram classificadas como incompletas.**
+  - **Causa:** o celular estava na horizontal com o app em retrato. As fotos têm EXIF 6, e depois da
+    rotação o texto da tela fica de cabeça para baixo. O ML Kit lê, mas a ordem das linhas e as
+    posições ficam invertidas (alternativas E…A antes do enunciado).
+  - **Consequência adicional:** como incompletas não viram referência, nada era reconhecido como
+    repetido, e cada rolagem gerava mais uma captura pendente.
+  - As 13 capturas ficaram gravadas como `PENDING` (dados novos, nada apagado).
+- **Correções** (validadas reprocessando **as mesmas 13 fotos** no M52 por um teste de diagnóstico
+  que registra só métricas, sem texto):
+  1. **Orientação do texto:** pelo ângulo das linhas que o ML Kit informa
+     (`Text.Line.getAngle()`). Com 90°, 180° ou 270°, a imagem é girada e relida; o recorte usa a
+     mesma rotação. Detectado 270° em todas as 13.
+  2. **Título "Questāo3-"** (mácron lido pelo OCR) e maiúsculas acentuadas ("QUESTÃO"): o padrão do
+     título não as aceitava (`IGNORE_CASE` só cobre ASCII).
+  3. **Botão de opção (◯) colado ao rótulo** ("OC)") é tolerado. **Uma letra perdida no meio da
+     lista** (B, "OO Scrum…", D) é inferida pela linha entre as vizinhas: uma vez por lista, nunca a
+     primeira.
+  4. **"Diagrama de Casos de Uso"** deixou de contar como conteúdo visual: a palavra visual precisa de
+     "abaixo", "observe", "a seguir"…
+  5. **Incompletas repetidas** na sessão são descartadas (comparadas só entre si); a captura completa
+     continua sendo comparada só com as completas.
+  6. **Recorte:**
+     - linhas fora de lugar na ordem de leitura não entram (o ML Kit pôs a bolha "pergunta para
+       teste", do topo, entre as alternativas B e C);
+     - a margem para antes das linhas vizinhas;
+     - só controles minúsculos (1 palavra) dentro da questão são tolerados ("Pergunte ao" da barra
+       flutuante deixou de ser);
+     - a coluna aceita recuo de até 15 %, não a bolha alinhada à direita;
+     - a última alternativa quebrada em duas linhas fica inteira.
+
+**Resultado nas 13 fotos reais (versão final):**
+
+| Foto | Conteúdo (conferido nas imagens) | Antes | Agora |
+| --- | --- | --- | --- |
+| #1, #2 | "Pergunta de teste" completa (sem "Questão N"; "C)" lido como "OO") | incompleta | **utilizável**, imagem recortada |
+| #3, #4, #6 | início da próxima questão (só título/enunciado/A) | incompleta | incompleta ✔ |
+| #5 | Questão 3 completa | incompleta | **utilizável** |
+| #7, #8 | Questão 4 completa (afirmativas I–IV, A–D) | incompleta | **utilizável** |
+| #9 | só o fim das alternativas anteriores | incompleta | incompleta ✔ |
+| #10 | Questão 5 completa | incompleta | **utilizável** |
+| #11, #12 | Questão 6 completa | incompleta | **utilizável** |
+| #13 | Questão 7 completa | incompleta | **utilizável** |
+
+- **Contagem:** 9 verdadeiros positivos, 4 verdadeiros negativos, **0 falsos positivos, 0 falsos
+  negativos**, numa amostra pequena (13 fotos, 7 questões, uma tela e uma iluminação).
+- **Recortes das 13 fotos:**
+  - nenhum dos itens externos procurados (favoritos do navegador, "Colinha", barra "Pergunte ao
+    ChatGPT", relógio, bolha da mensagem) aparece na imagem que seria enviada;
+  - conferência visual de #1, #10 e #13: só a questão, com a última alternativa inteira;
+  - a releitura do recorte encontra as mesmas alternativas (5/5 ou 4/4), exceto quando o OCR perde
+    um rótulo (#1, #11).
+
+**Desempenho:**
+
+- **CPU** (`top`, a cada 30 s): 14–28 % monitorando; até 57 % durante captura e OCR.
+- **Memória:** 180–254 MB.
+- **Bateria:** **não medida** (carregando pelo USB). Temperatura de 39,2 a 40,0 °C.
+- **OCR:** 0,7–1,4 s por foto na sessão; 1,5–3,6 s com a releitura girada (no diagnóstico).
+- **Fotos:** cerca de 4,7 MB nesta posição (3024×4032).
+
+**Pendências:**
+
+- Uma **segunda sessão real** com a versão corrigida, para ver no fluxo ao vivo a detecção, as
+  repetidas e as incompletas repetidas. A validação acima reprocessa as mesmas fotos.
+- **Cópias temporárias** das 13 fotos ficaram no aparelho, fora do app: `/data/local/tmp/qv_field/`
+  e, no app de teste, `files/field_captures/` e `files/field_sent/`. A remoção foi bloqueada pela
+  verificação de segurança e fica a critério do usuário.
+- **Bateria** numa sessão fora do carregador.
+
+### Rodada 5 (2026-10-29 02:56–02:58): segunda sessão real, versão corrigida
+
+Trava do envio real ligada; mesmo jeito de segurar o celular da sessão 1 (EXIF 6, tela de cabeça
+para baixo). Registros temporários com timeout de 20 min, só métricas.
+
+| Captura | Conteúdo (conferido nas fotos) | Veredito |
+| --- | --- | --- |
+| #1 | Questão 8 completa (A–E) | nova ✔ |
+| #2 | Questão 9 completa | nova ✔ |
+| #3 | Questão 9 de novo | repetida ✔ (foto descartada) |
+| #4 | Questão 10 completa | nova ✔ |
+| #5 | Questão 11 completa | nova ✔ |
+| #6 | Questão 11 de novo | repetida ✔ (foto descartada) |
+| #7 | Questão 12 completa | nova ✔ |
+
+- **Nenhuma requisição à OpenAI** (`ai_requests` = 1). As 5 questões ficaram `PENDING`, prontas
+  para "Analisar".
+- **Nenhuma captura incompleta nesta sessão:** a câmera só fotografa com a imagem estável, e nenhuma
+  parada ocorreu com a lista cortada. **O caso "incompleta ao vivo" foi validado só pelas fotos da
+  sessão 1 e pelos testes.**
+- **CPU** 18–61 % (pico na captura com OCR); temperatura de 40,4 a 41,0 °C, carregando (**bateria
+  não medida**).
+- **Integridade após reiniciar:**
+  - 50 questões, 4 sessões, `integrity_check` ok, reconciliação sem remoções, nenhum `sk-`;
+  - as 32 questões e fotos originais, a chave e as configurações estão idênticas ao backup de
+    2026-10-29;
+  - dados novos: só as capturas das duas sessões (13 + 5).
+- **Juntando as duas sessões** (versão corrigida aplicada às 13 fotos da 1 e ao vivo na 2):
+  - 14 questões completas reconhecidas;
+  - 4 incompletas recusadas;
+  - 2 repetidas descartadas;
+  - **0 falsos positivos, 0 falsos negativos.**
 
 ## 4. Funcionalidades implementadas
 

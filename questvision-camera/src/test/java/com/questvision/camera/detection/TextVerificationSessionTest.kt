@@ -83,6 +83,49 @@ class TextVerificationSessionTest {
         assertTrue(List(8) { feed(2) }.all { it == null })
     }
 
+    // 3 + 5: an incomplete question is kept, but a better capture of it still counts as new.
+    @Test
+    fun anIncompleteQuestion_isKept_butDoesNotBlockABetterCapture() {
+        session.start()
+        val partial = captureOf(1)
+        session.onCaptureFinished(partial, true)
+        val first = session.onTextRecognized(partial, text(1), complete = false)!!
+
+        assertEquals(TextVerdict.INCOMPLETE, first.verdict)
+        assertTrue(first.keep)
+        assertEquals(1, session.stats.incompleteCaptures)
+
+        // The user scrolls: the screen changes and the complete question is captured.
+        val better = captureOf(2)
+        session.onCaptureFinished(better, true)
+        val second = session.onTextRecognized(better, text(1))!!
+
+        assertEquals(TextVerdict.NEW_QUESTION, second.verdict)
+        assertEquals(2, session.autoCaptureCount)
+    }
+
+    // Field session 2026-10-29: scrolling over a partly visible question must not store it again and again.
+    @Test
+    fun aRepeatedIncompleteScreen_isDropped_butTheCompleteQuestionStillCounts() {
+        session.start()
+        val partial = captureOf(1)
+        session.onCaptureFinished(partial, true)
+        assertEquals(TextVerdict.INCOMPLETE, session.onTextRecognized(partial, text(1), complete = false)!!.verdict)
+
+        val samePartial = captureOf(2)
+        session.onCaptureFinished(samePartial, true)
+        val repeat = session.onTextRecognized(samePartial, text(1), complete = false)!!
+
+        assertEquals(TextVerdict.DUPLICATE, repeat.verdict)
+        assertFalse(repeat.keep)
+
+        // Scrolled further (another scene), the whole question is visible now.
+        val complete = captureOf(3)
+        session.onCaptureFinished(complete, true)
+        assertEquals(TextVerdict.NEW_QUESTION, session.onTextRecognized(complete, text(1))!!.verdict)
+        assertEquals(2, session.autoCaptureCount)
+    }
+
     @Test
     fun unreadableText_isNotCounted() {
         session.start()

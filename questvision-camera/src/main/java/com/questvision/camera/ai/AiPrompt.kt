@@ -47,6 +47,13 @@ internal fun textPrompt(question: String): String = "Questão (texto extraído p
 /** The user message accompanying the photo in [AnalysisMode.IMAGE]. */
 internal const val IMAGE_PROMPT = "Questão na foto da tela anexada."
 
+/**
+ * [IMAGE_PROMPT], naming the question when its number was read: a photographed chat often shows the
+ * end of the previous question too.
+ */
+internal fun imagePrompt(questionNumber: Int?): String =
+    if (questionNumber == null) IMAGE_PROMPT else "$IMAGE_PROMPT Responda somente a Questão $questionNumber."
+
 /** Name of the Structured Outputs schema (any stable identifier). */
 internal const val ANSWER_SCHEMA_NAME = "question_answer"
 

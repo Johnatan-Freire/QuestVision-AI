@@ -79,7 +79,8 @@ sealed interface AnalysisResult {
  * Sends one stored question to the AI on the user's request and records the outcome.
  *
  * Guarantees: one request per call and never a retry; the same question is never in flight twice (an
- * in-memory guard plus an atomic claim in SQLite); at most [AiSettings.requestsPerDay] requests per
+ * in-memory guard plus an atomic claim in SQLite), and no two questions are either (one request in
+ * flight in the whole app); at most [AiSettings.requestsPerDay] requests per
  * [AI_LIMIT_WINDOW_MS], counted in the database, so restarting the app resets nothing; the photo, the
  * OCR text and any earlier answer are never deleted by a failure; a cancelled or interrupted request is
  * recorded as such (it may still have been processed and billed). Nothing here runs on its own: there
@@ -98,11 +99,25 @@ class QuestionAnalyzer
         private val guard = Mutex()
         private val inFlight = HashSet<String>()
 
+        /**
+         * [automatic]: sent by the session without the user choosing the mode, so the image mode may
+         * only send the question's region (never the whole photo).
+         */
         suspend fun analyze(
             questionId: String,
             mode: AnalysisMode,
+            automatic: Boolean = false,
         ): AnalysisResult {
-            if (!guard.withLock { inFlight.add(questionId) }) return AnalysisResult.Rejected(AnalysisRejection.ALREADY_PROCESSING)
+            // One analysis at a time in the whole app (manual or automatic): never two requests in flight.
+            val admitted =
+                guard.withLock {
+                    when {
+                        questionId in inFlight -> AnalysisRejection.ALREADY_PROCESSING
+                        inFlight.isNotEmpty() -> AnalysisRejection.ANOTHER_IN_PROGRESS
+                        else -> null.also { inFlight.add(questionId) }
+                    }
+                }
+            if (admitted != null) return AnalysisResult.Rejected(admitted)
             try {
                 val question = questions.question(questionId) ?: return AnalysisResult.Rejected(AnalysisRejection.NOT_RECORDED)
                 if (question.aiStatus == AiStatus.PROCESSING) return AnalysisResult.Rejected(AnalysisRejection.ALREADY_PROCESSING)
@@ -110,7 +125,7 @@ class QuestionAnalyzer
                 if (questions.aiRequestsInLimitWindow() >= config.requestsPerDay) {
                     return AnalysisResult.Rejected(AnalysisRejection.REQUEST_LIMIT)
                 }
-                val input = prepare(question, mode, config) ?: return AnalysisResult.Rejected(rejectionFor(mode))
+                val input = prepare(question, mode, config, automatic) ?: return AnalysisResult.Rejected(rejectionFor(mode, automatic))
                 return keys.useKey { key -> send(question.id, key, input, config) }
                     ?: AnalysisResult.Rejected(AnalysisRejection.NO_KEY)
             } finally {
@@ -122,6 +137,7 @@ class QuestionAnalyzer
             question: QuestionEntity,
             mode: AnalysisMode,
             config: AiSettings,
+            automatic: Boolean,
         ): AiInput? =
             when (mode) {
                 AnalysisMode.TEXT -> {
@@ -130,13 +146,22 @@ class QuestionAnalyzer
 
                 AnalysisMode.IMAGE -> {
                     images
-                        .encode(questions.fileOf(question), config.imageMaxDimension)
-                        ?.let { AiInput(mode, IMAGE_PROMPT, it.dataUrl) }
+                        .encode(
+                            questions.fileOf(question),
+                            config.imageMaxDimension,
+                            if (automatic) RegionPolicy.QUESTION_ONLY else RegionPolicy.QUESTION_OR_WHOLE,
+                        )?.let { AiInput(mode, imagePrompt(question.questionNumber), it.dataUrl) }
                 }
             }
 
-        private fun rejectionFor(mode: AnalysisMode) =
-            if (mode == AnalysisMode.TEXT) AnalysisRejection.INSUFFICIENT_TEXT else AnalysisRejection.IMAGE_UNAVAILABLE
+        private fun rejectionFor(
+            mode: AnalysisMode,
+            automatic: Boolean,
+        ) = when {
+            mode == AnalysisMode.TEXT -> AnalysisRejection.INSUFFICIENT_TEXT
+            automatic -> AnalysisRejection.QUESTION_REGION_NOT_FOUND
+            else -> AnalysisRejection.IMAGE_UNAVAILABLE
+        }
 
         private suspend fun send(
             questionId: String,

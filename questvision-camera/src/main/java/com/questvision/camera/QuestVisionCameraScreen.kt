@@ -102,6 +102,7 @@ import com.android.camera.coreui.state.ErrorView
 import com.android.camera.coreui.state.LoadingView
 import com.android.camera.coreui.state.UnsupportedView
 import com.questvision.camera.ai.AiAnalysisPanel
+import com.questvision.camera.ai.AutoAnalysisStatus
 import com.questvision.camera.detection.MonitoringState
 import com.questvision.camera.settings.AiSettingsPanel
 import kotlinx.coroutines.delay
@@ -413,6 +414,7 @@ private fun SidePanel(
                 StatusChip(state = state)
                 NoticeText(state = state, style = MaterialTheme.typography.bodySmall)
                 MonitoringControls(state = state, viewModel = viewModel, stacked = true)
+                AutoAnalysisStatus(state = state.autoAnalysis)
             }
 
             if (state.minZoom < state.maxZoom) {
@@ -535,16 +537,34 @@ private fun NoticeText(
                 Notice.RECORD_FAILED -> {
                     stringResource(R.string.questvision_record_failed)
                 }
+
+                Notice.ALREADY_ANALYZED -> {
+                    stringResource(R.string.questvision_already_analyzed)
+                }
+
+                Notice.INCOMPLETE_SAVED -> {
+                    stringResource(R.string.questvision_incomplete_saved)
+                }
+
+                Notice.STORAGE_LOW -> {
+                    stringResource(R.string.questvision_storage_low)
+                }
             },
         style = style,
         color =
             when (notice) {
-                Notice.CAPTURE_FAILED, Notice.TEXT_READ_FAILED, Notice.RECORD_FAILED -> MaterialTheme.colorScheme.error
+                Notice.CAPTURE_FAILED, Notice.TEXT_READ_FAILED, Notice.RECORD_FAILED, Notice.STORAGE_LOW -> {
+                    MaterialTheme.colorScheme.error
+                }
 
-                Notice.AUTO_CAPTURE_SAVED -> MaterialTheme.colorScheme.primary
+                Notice.AUTO_CAPTURE_SAVED -> {
+                    MaterialTheme.colorScheme.primary
+                }
 
                 // Skipped candidates are routine: keep them discreet.
-                Notice.DUPLICATE_IGNORED, Notice.UNREADABLE_IGNORED -> Color.White.copy(alpha = 0.6f)
+                Notice.DUPLICATE_IGNORED, Notice.UNREADABLE_IGNORED, Notice.ALREADY_ANALYZED, Notice.INCOMPLETE_SAVED -> {
+                    Color.White.copy(alpha = 0.6f)
+                }
             },
         textAlign = TextAlign.Center,
         modifier = modifier,
@@ -597,6 +617,7 @@ private fun BottomControls(
         NoticeText(state = state, modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp))
 
         MonitoringControls(state = state, viewModel = viewModel)
+        AutoAnalysisStatus(state = state.autoAnalysis, modifier = Modifier.padding(horizontal = 24.dp))
 
         // Fixed-focal-length lenses report min == max; there is nothing to zoom then.
         if (state.minZoom < state.maxZoom) {

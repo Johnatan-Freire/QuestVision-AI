@@ -327,7 +327,7 @@ private fun confidenceLabel(confidence: AnswerConfidence): String =
     )
 
 @Composable
-private fun errorLabel(error: AiError): String =
+internal fun errorLabel(error: AiError): String =
     stringResource(
         when (error) {
             AiError.AUTH -> R.string.questvision_ai_error_auth
@@ -357,5 +357,7 @@ private fun rejectionLabel(reason: AnalysisRejection): String =
             AnalysisRejection.REQUEST_LIMIT -> R.string.questvision_ai_reject_request_limit
             AnalysisRejection.INSUFFICIENT_TEXT -> R.string.questvision_ai_text_unavailable
             AnalysisRejection.IMAGE_UNAVAILABLE -> R.string.questvision_ai_reject_image
+            AnalysisRejection.QUESTION_REGION_NOT_FOUND -> R.string.questvision_ai_reject_region
+            AnalysisRejection.ANOTHER_IN_PROGRESS -> R.string.questvision_ai_reject_busy
         },
     )

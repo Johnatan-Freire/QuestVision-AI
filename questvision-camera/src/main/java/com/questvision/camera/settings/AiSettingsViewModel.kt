@@ -99,6 +99,8 @@ class AiSettingsViewModel
 
         fun selectRequestsPerDay(limit: Int) = updateSettings { it.copy(requestsPerDay = limit) }
 
+        fun selectAnalysesPerSession(limit: Int) = updateSettings { it.copy(analysesPerSession = limit) }
+
         fun selectMaxOutputTokens(tokens: Int) = updateSettings { it.copy(maxOutputTokens = tokens) }
 
         fun selectImageMaxDimension(pixels: Int) = updateSettings { it.copy(imageMaxDimension = pixels) }

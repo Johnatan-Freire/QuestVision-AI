@@ -190,6 +190,12 @@ class QuestionRepository internal constructor(
     /** Earlier questions with the same OCR fingerprint, across sessions (the future local answer cache). */
     suspend fun questionsLike(dedupKey: String): List<QuestionEntity> = serialized { dao.questionsWithDedupKey(dedupKey) }
 
+    /** Questions the AI has seen or is seeing (any status but NOT_REQUESTED and PENDING), oldest first. */
+    suspend fun questionsSentToAi(): List<QuestionEntity> =
+        serialized {
+            listOf(AiStatus.PROCESSING, AiStatus.ANSWERED, AiStatus.NEEDS_REVIEW, AiStatus.FAILED).flatMap { dao.questionsWithAiStatus(it) }
+        }
+
     suspend fun updateAiStatus(
         id: String,
         status: AiStatus,
@@ -436,7 +442,8 @@ class QuestionRepository internal constructor(
 /** The OCR text as plain lines, as stored in the database. */
 internal fun plainText(text: RecognizedText): String = text.lines.joinToString("\n") { line -> line.joinToString(" ") { it.text } }
 
-internal val QUESTION_NUMBER = Regex("""^\s*quest[aã]o\s*(?:n[º°o.]?\s*)?(\d{1,3})(?!\d)""", RegexOption.IGNORE_CASE)
+/** "Questão 3", "QUESTÃO Nº 03", and OCR variants of the "ã" ("Questāo", "Questao", "Questáo"). */
+internal val QUESTION_NUMBER = Regex("""^\s*quest[aãâáàäāAÃÂÁÀÄĀ]o\s*(?:n[º°o.]?\s*)?(\d{1,3})(?!\d)""", RegexOption.IGNORE_CASE)
 
 /**
  * The question number shown on screen, from the first line that starts with "Questão N" ("Questão 05
