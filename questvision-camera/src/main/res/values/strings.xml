@@ -76,7 +76,7 @@
     <string name="questvision_settings_primary_model">Primary (automatic captures)</string>
     <string name="questvision_settings_advanced_model">Advanced (on demand)</string>
     <string name="questvision_settings_budget">Planned monthly budget</string>
-    <string name="questvision_settings_not_sending_yet">Requests are sent to OpenAI only when you tap Analyze on a photo (manual, one at a time); nothing is sent automatically yet.</string>
+    <string name="questvision_settings_sending_policy">Requests go to OpenAI when you tap Analyze on a photo (manual, one at a time). Real automatic sending only happens during an armed and authorized trial, within its limit of three requests.</string>
     <string name="questvision_record_failed">Photo saved, but not recorded in the history database — it will be recovered on the next start</string>
     <string name="questvision_ai_open">Analyze with AI</string>
     <string name="questvision_ai_title">AI analysis</string>

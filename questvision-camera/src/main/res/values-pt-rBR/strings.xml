@@ -74,7 +74,7 @@
     <string name="questvision_settings_primary_model">Principal (capturas automáticas)</string>
     <string name="questvision_settings_advanced_model">Avançado (sob demanda)</string>
     <string name="questvision_settings_budget">Orçamento mensal planejado</string>
-    <string name="questvision_settings_not_sending_yet">Só há envio à OpenAI quando você toca em Analisar numa foto (manual, uma por vez); nada é enviado automaticamente ainda.</string>
+    <string name="questvision_settings_sending_policy">O envio à OpenAI acontece quando você toca em Analisar numa foto (manual, uma por vez). O envio automático real funciona exclusivamente durante um teste armado e autorizado, respeitando o limite de três envios.</string>
     <string name="questvision_record_failed">Foto salva, mas não registrada no banco do histórico — será recuperada ao reabrir o app</string>
     <string name="questvision_ai_open">Analisar com IA</string>
     <string name="questvision_ai_title">Análise por IA</string>

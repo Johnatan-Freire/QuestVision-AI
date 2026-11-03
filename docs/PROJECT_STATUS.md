@@ -2352,7 +2352,7 @@ Nenhuma chamada real foi feita nesta etapa.
   atualizado nesta etapa.
 - **Bateria no momento:** 28 %, carregando, **42,6 °C**.
 
-## 3o. Fase 3.6: variante exclusiva de teste (2026-10-29, não commitada, sem chamadas reais)
+## 3o. Fase 3.6: variante exclusiva de teste (2026-10-29, `022227a`, sem chamadas reais)
 
 **Variante `trial`** (build type do `:app`; mesmo `applicationId` `com.questvision.ai` e mesma
 assinatura de debug, então instala por cima com `install -r` sem apagar dados):
@@ -2410,6 +2410,77 @@ assinatura de debug, então instala por cima com `install -r` sem apagar dados):
   carregando pelo USB.
 - `assembleDebug`, `assembleTrial` e `spotlessCheck` ✅. Flags confirmadas no `BuildConfig` gerado:
   `AUTO_TRIAL_ID` vale `1` no `trial` e `0` no `debug`. O APK `trial` não contém chave.
+
+## 3p. Fase 3.6: validação no aparelho e ajustes finais (2026-11-03, sem chamadas reais)
+
+**A Fase 3.6 não está concluída:** a sessão real com três questões ainda não foi executada nem
+autorizada.
+
+**Ajuste de texto:** a nota final das configurações dizia "nada é enviado automaticamente ainda", o
+que deixaria de valer com o teste armado. A chave passou de `questvision_settings_not_sending_yet`
+para `questvision_settings_sending_policy`, em en e pt-BR. O novo texto diz que o envio é manual
+(Analisar) e que o envio automático real só ocorre durante um teste armado e autorizado, com o limite
+de três envios. Lógica, limites e consentimento não mudaram.
+
+**Testes automatizados aprovados:**
+
+- **JVM: 284/284.** Inclui `AutoTrialTest` (17), que cobre:
+  - cota persistente;
+  - 4ª questão pendente;
+  - pausa e retomada;
+  - `UNKNOWN` contado;
+  - rearme sem renovação;
+  - consentimento;
+  - erros e custo desconhecido.
+- `spotlessCheck` ✅. `assembleDebug`, `assembleTrial` e o APK de testes compilam.
+- **Instrumentados no M52: 36/36** (2026-11-03, com o APK de testes do `022227a`). Inclui
+  `AiSettingsStoreDeviceTest`, que cobre o estado armado persistido e o rearme que mantém o início
+  da cota. Os instrumentados **não** foram executados de novo depois do ajuste de texto, que só
+  altera um recurso de string. No momento, um app de streaming estava em primeiro plano no aparelho.
+
+**Conferido no aparelho (2026-11-03, versão `trial` do `022227a` instalada em 2026-10-29 com
+`install -r`):**
+
+- **Tela de configurações**, conferida pelo dump da interface (a tela bloqueia captura):
+  - a seção "TESTE: ENVIO AUTOMÁTICO REAL" aparece;
+  - o interruptor "Armado" está **desligado** e habilitado;
+  - aparece "Envios restantes deste teste: 3 de 3";
+  - o interruptor **não** foi tocado.
+- **Nenhuma chamada real à OpenAI.** `ai_requests` continua com os mesmos 2 registros (28/10 e 29/10).
+- **Comparação com o backup `2026-10-29-antes-da-variante-trial`, só leitura:**
+  - banco v3 íntegro;
+  - `questions` (50: 28 pendentes, 21 não solicitadas, 1 respondida), `capture_sessions` e
+    `ai_requests` idênticas;
+  - as 50 fotos e a chave (51 arquivos) têm MD5 idêntico;
+  - as preferências estão idênticas, sem nenhuma chave `auto_trial_*`, ou seja, desarmado e
+    nunca armado.
+- **Temperatura:**
+  - 40,3 °C com a câmera aberta, pico de 40,7 °C;
+  - 39,9 °C depois de 10 minutos com o app em segundo plano;
+  - 39,6 °C ao fim dos instrumentados;
+  - 39,8 °C na conferência final.
+- **Bateria:** entre 58 % e 64 %, carregando pelo USB.
+- **CPU:** cerca de 420 % livres de 800 % ao fim dos testes.
+- O texto corrigido **ainda não foi instalado** no aparelho. O app instalado continua com o texto
+  antigo.
+
+**Ainda não validado em sessão real:**
+
+- consentimento e Cancelar na tela de termos (só aparecem com o teste armado);
+- envio automático de 3 questões novas, bloqueio da 4ª e desarme automático;
+- interrupção por erro, conexão ou custo desconhecido com a API real;
+- custo observado em comparação com o painel da OpenAI;
+- temperatura e bateria durante uma sessão de monitoramento com envios.
+
+**Limitações:**
+
+- Desinstalar o app apagaria a cota junto com todo o histórico, por isso só se usa `install -r`.
+- Requisições manuais feitas com o teste armado também consomem a cota.
+- Uma requisição com resultado desconhecido conta para a cota sem ter resposta.
+- O consentimento e o Cancelar só foram cobertos por testes JVM.
+
+**Commits:** `8ac4e0f` (preparação) e `022227a` (variante `trial`), mais o commit deste ajuste,
+publicados apenas em `questvision/fase-1`. A `main` continua em `2f10e46`.
 
 ## 4. Funcionalidades implementadas
 

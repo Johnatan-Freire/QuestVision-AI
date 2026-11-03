@@ -157,7 +157,7 @@ fun AiSettingsPanel(
                 )
                 Notice(text = stringResource(R.string.questvision_settings_trial_notice, TRIAL_MAX_REQUESTS_PER_SESSION))
             }
-            Notice(text = stringResource(R.string.questvision_settings_not_sending_yet))
+            Notice(text = stringResource(R.string.questvision_settings_sending_policy))
         }
     }
 }
