@@ -2482,6 +2482,52 @@ de três envios. Lógica, limites e consentimento não mudaram.
 **Commits:** `8ac4e0f` (preparação) e `022227a` (variante `trial`), mais o commit deste ajuste,
 publicados apenas em `questvision/fase-1`. A `main` continua em `2f10e46`.
 
+## 3q. Fase 3.6: sessão real parcial e correção de foco (2026-11-04)
+
+**Sessão real autorizada pelo usuário.** O usuário armou o teste e consentiu no próprio celular. O
+toque do agente no interruptor foi bloqueado pelo controle de permissões, e ele não tentou
+contornar o bloqueio.
+
+- Armado às 03:44:58. A sessão `20261104-034518` foi de 03:45:18 a 03:46:50.
+- **Questão 1 (Redes):**
+  - resposta **B, correta**, confiança alta;
+  - modo texto, `gpt-6-luna`, `default`;
+  - HTTP 200 em 3,6 s;
+  - 473 tokens de entrada e 66 de saída, cerca de US$ 0,00008;
+  - registrada como `ai_requests` #3.
+- **Segunda captura (03:46):** a câmera captou a tela do VS Code, e não a Questão 2. Ela ficou
+  `PENDING`, com 0 tentativas e **não foi enviada**, porque a avaliação local recusou o texto.
+- **Interrupção:** um app externo abriu no celular. O app liberou a câmera e a sessão foi encerrada.
+- **Saldo:** 1 dos 3 envios usado. O teste segue armado com 2 restantes, contados no banco.
+- **Condições:** de 41,3 °C a 41,6 °C; bateria em 66 %, carregando; CPU de 359 % a 487 % livres
+  (de 800 %). O limite de 40 °C foi suspenso pelo usuário; o de 45 °C foi mantido.
+- **Questões 2 a 4 e o bloqueio da 4ª:** não validados.
+
+**Problema observado:** com o celular fixo num suporte, a imagem "aproxima e afasta" e nunca
+estabiliza.
+
+- O app não muda zoom nem foco sozinho.
+- A causa é o foco automático contínuo procurando o foco num monitor claro e uniforme.
+- O toque para focar travava o foco por só cerca de 5 s (o padrão do CameraX).
+
+**Correção:** `QuestVisionCameraController.focus()` passou a usar `disableAutoCancel()`. O foco e a
+exposição ficam travados no ponto tocado até o próximo toque. Basta tocar no texto da questão.
+
+- Não muda envio, limites, cota nem consentimento.
+- JVM 284/284, `spotlessCheck` e build ✅.
+- Instalada com `install -r` em 2026-11-04 às 03:57. Os dados foram preservados, e o teste
+  continua armado com o mesmo início.
+- Backup feito antes da instalação: `~/QuestVision-backups/2026-11-04-antes-correcao-foco` (60
+  arquivos, SHA-256).
+- Ainda não confirmada visualmente no aparelho.
+
+**Página das questões** (`~/QuestVision-teste/`, fora do repositório): avança com um clique em
+qualquer parte da página, além do teclado; o fundo ficou levemente cinza.
+
+**Próximo passo, decidido pelo usuário em 2026-11-04:** começar já o envio das respostas ao
+Telegram, por um bot com token criptografado. A mensagem terá número, letra e texto da alternativa.
+O teste da 3.6 deve ser desarmado e fica com 1 de 3 envios validado.
+
 ## 4. Funcionalidades implementadas
 
 - Identidade QuestVision AI (nome do app, `applicationId` `com.questvision.ai`, título na tela).

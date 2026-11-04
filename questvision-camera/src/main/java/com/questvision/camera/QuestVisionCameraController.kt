@@ -281,10 +281,13 @@ class QuestVisionCameraController(
         val boundCamera = camera ?: return
         val factory = SurfaceOrientedMeteringPointFactory(width, height)
         val point = factory.createPoint(surfaceCoords.x, surfaceCoords.y)
-        // Meter exposure on the tapped region too, so bright screen content isn't blown out.
+        // Meter exposure on the tapped region too, so bright screen content isn't blown out. The lock
+        // holds until the next tap: on a bright, flat monitor continuous autofocus keeps hunting and
+        // the frame never settles for the stability detector.
         val action =
             FocusMeteringAction
                 .Builder(point, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
+                .disableAutoCancel()
                 .build()
         if (boundCamera.cameraInfo.isFocusMeteringSupported(action)) {
             boundCamera.cameraControl.startFocusAndMetering(action)
