@@ -815,6 +815,25 @@ enum class FramingHint {
     UNSTABLE,
 }
 
+/** Lines running into one side edge, with no alternatives found, mean the labels are past it. */
+private const val MIN_LINES_AT_EDGE = 3
+
+/**
+ * No alternatives were read, but several lines run into the left or right edge: their labels
+ * ("A)", "B)"…) are likely just past it (field photo of 2026-11-05: question 3 cut on the left).
+ */
+private fun sideOfMissingLabels(
+    lines: List<Line>,
+    config: AssessmentConfig,
+): FramingHint? {
+    val boxes = lines.mapNotNull { it.box }
+    return when {
+        boxes.count { it.left < config.sideMargin } >= MIN_LINES_AT_EDGE -> FramingHint.LEFT
+        boxes.count { it.right > 1f - config.sideMargin } >= MIN_LINES_AT_EDGE -> FramingHint.RIGHT
+        else -> null
+    }
+}
+
 /** Lines thinner than this fraction of the photo's height are too small to read reliably. */
 private const val MIN_LINE_HEIGHT = 0.012f
 
@@ -830,7 +849,7 @@ fun framingHint(
 ): FramingHint? {
     if (assessment.usable) return null
     val lines = linesOf(text)
-    val location = locate(lines, config) ?: return FramingHint.NO_QUESTION
+    val location = locate(lines, config) ?: return sideOfMissingLabels(lines, config) ?: FramingHint.NO_QUESTION
     val startBox = lines[location.start].box
     val endBox = lines[location.end].box
     val cutBottom = cutBelow(lines, location.end, endBox, config)

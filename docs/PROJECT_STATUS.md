@@ -2770,6 +2770,21 @@ só na variante de teste, 3 no total").
   do backup estão idênticos, e o token e o chat foram mantidos.
 - **Instrumentados não executados após esta mudança:** um app externo estava em primeiro plano.
 
+**Primeira sessão automática real** (`20261105-015125`, 2026-11-05, sem tela cheia):
+
+- **Resultado:** Questões 2, 3 e 4 enviadas sozinhas e respondidas corretamente (D, A e C, confiança
+  alta), todas entregues ao Telegram (SENT), sem nenhum toque durante o monitoramento.
+  - A Questão 1 não foi reenviada (já analisada).
+  - 3 chamadas em modo texto, de 1,7 s a 4,0 s, cerca de US$ 0,0003.
+- **Commit e push:** `0a15520`, autorizados pelo usuário.
+- **Fotos barradas, conferidas a olho:**
+  - Questão 4 (2 fotos): o enunciado sai pela borda e falta a D; bloqueio correto.
+  - Questão 3 (2 fotos): os rótulos estão cortados à esquerda; bloqueio correto, mas a dica seria
+    "sem questões".
+- **Correção da dica (não commitada):** sem alternativas legíveis e com 3 ou mais linhas encostadas
+  numa borda lateral, a dica passa a ser "vire ← esquerda" ou "vire → direita". JVM 320/320. Ainda
+  não instalada no aparelho.
+
 ## 4. Funcionalidades implementadas
 
 - Identidade QuestVision AI (nome do app, `applicationId` `com.questvision.ai`, título na tela).

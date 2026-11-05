@@ -168,4 +168,25 @@ class QuestionOrderTest {
         assertTrue(assessment.issues.toString(), assessment.usable)
         assertEquals(null, framingHint(screen, assessment))
     }
+
+    // Field photo of 2026-11-05 (question 3): the left edge cut the labels "A)"…"D)" and "Q" of "Qual".
+    @Test
+    fun labelsCutOnTheLeft_tipSaysLeft_notNoQuestion() {
+        val screen =
+            read(
+                "Questão 3" to LineBox(0.05f, 0.10f, 0.20f, 0.14f),
+                "Considere o código:" to LineBox(0.005f, 0.16f, 0.25f, 0.20f),
+                "int numero = 7;" to LineBox(0.04f, 0.22f, 0.25f, 0.26f),
+                "System.out.println(numero / 2);" to LineBox(0.04f, 0.27f, 0.50f, 0.31f),
+                "ual será a saída?" to LineBox(0.00f, 0.34f, 0.22f, 0.38f),
+                "3" to LineBox(0.003f, 0.40f, 0.02f, 0.44f),
+                "3.5" to LineBox(0.003f, 0.46f, 0.05f, 0.50f),
+                "4" to LineBox(0.003f, 0.52f, 0.02f, 0.56f),
+                "Erro de compilação" to LineBox(0.003f, 0.58f, 0.25f, 0.62f),
+            )
+        val assessment = assessQuestion(screen)
+
+        assertFalse(assessment.usable)
+        assertEquals(FramingHint.LEFT, framingHint(screen, assessment))
+    }
 }
