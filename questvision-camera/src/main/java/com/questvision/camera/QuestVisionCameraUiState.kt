@@ -77,9 +77,7 @@ enum class Notice {
 /** What a session with real automatic requests may do, shown before the user consents. */
 data class RealSessionTerms(
     val model: String,
-    /** At most this many requests in the session. */
-    val maxRequests: Int,
-    /** Requests still allowed in the rolling 24 hours. */
+    /** Requests still allowed in the rolling 24 hours (a session has no cap of its own). */
     val leftToday: Int,
 )
 

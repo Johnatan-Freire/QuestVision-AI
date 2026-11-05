@@ -70,64 +70,75 @@ interface SecretCipher {
  * The key deliberately does not require user authentication or an unlocked device, so automatic
  * processing can use it in the background. See docs/PROJECT_STATUS.md for what this does and does
  * not protect against.
+ *
+ * Each secret gets its own Keystore key ([keyAlias]), so removing one never makes another one
+ * undecryptable. The injected instance is the OpenAI key's, under its original alias.
  */
 @Singleton
-class AndroidKeystoreSecretCipher
+class AndroidKeystoreSecretCipher(
+    private val keyAlias: String,
+) : SecretCipher {
     @Inject
-    constructor() : SecretCipher {
-        override fun encrypt(plaintext: ByteArray): SealedSecret {
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            // The Keystore generates a fresh random IV for every encryption.
-            cipher.init(Cipher.ENCRYPT_MODE, keyOrCreate())
-            return SealedSecret(cipher.iv, cipher.doFinal(plaintext))
-        }
+    constructor() : this(OPENAI_KEY_ALIAS)
 
-        override fun decrypt(sealed: SealedSecret): ByteArray {
-            val key = existingKey() ?: throw java.security.KeyStoreException("Key not found")
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, sealed.iv))
-            return cipher.doFinal(sealed.ciphertext)
-        }
-
-        override fun destroyKey() {
-            keyStore().deleteEntry(KEY_ALIAS)
-        }
-
-        private fun keyStore(): KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-
-        private fun existingKey(): SecretKey? = keyStore().getKey(KEY_ALIAS, null) as? SecretKey
-
-        private fun keyOrCreate(): SecretKey = existingKey() ?: generateKey()
-
-        private fun generateKey(): SecretKey {
-            fun spec(strongBox: Boolean) =
-                KeyGenParameterSpec
-                    .Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setKeySize(KEY_BITS)
-                    .setRandomizedEncryptionRequired(true)
-                    .apply { if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) setIsStrongBoxBacked(true) }
-                    .build()
-
-            val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                try {
-                    generator.init(spec(strongBox = true))
-                    return generator.generateKey()
-                } catch (exc: ProviderException) {
-                    // StrongBoxUnavailableException (a ProviderException): fall back to the TEE.
-                }
-            }
-            generator.init(spec(strongBox = false))
-            return generator.generateKey()
-        }
-
-        private companion object {
-            const val ANDROID_KEYSTORE = "AndroidKeyStore"
-            const val KEY_ALIAS = "questvision_openai_api_key_v1"
-            const val TRANSFORMATION = "AES/GCM/NoPadding"
-            const val KEY_BITS = 256
-            const val TAG_BITS = 128
-        }
+    override fun encrypt(plaintext: ByteArray): SealedSecret {
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        // The Keystore generates a fresh random IV for every encryption.
+        cipher.init(Cipher.ENCRYPT_MODE, keyOrCreate())
+        return SealedSecret(cipher.iv, cipher.doFinal(plaintext))
     }
+
+    override fun decrypt(sealed: SealedSecret): ByteArray {
+        val key = existingKey() ?: throw java.security.KeyStoreException("Key not found")
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, sealed.iv))
+        return cipher.doFinal(sealed.ciphertext)
+    }
+
+    override fun destroyKey() {
+        keyStore().deleteEntry(keyAlias)
+    }
+
+    private fun keyStore(): KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+
+    private fun existingKey(): SecretKey? = keyStore().getKey(keyAlias, null) as? SecretKey
+
+    private fun keyOrCreate(): SecretKey = existingKey() ?: generateKey()
+
+    private fun generateKey(): SecretKey {
+        fun spec(strongBox: Boolean) =
+            KeyGenParameterSpec
+                .Builder(keyAlias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(KEY_BITS)
+                .setRandomizedEncryptionRequired(true)
+                .apply { if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) setIsStrongBoxBacked(true) }
+                .build()
+
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                generator.init(spec(strongBox = true))
+                return generator.generateKey()
+            } catch (exc: ProviderException) {
+                // StrongBoxUnavailableException (a ProviderException): fall back to the TEE.
+            }
+        }
+        generator.init(spec(strongBox = false))
+        return generator.generateKey()
+    }
+
+    private companion object {
+        const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        const val TRANSFORMATION = "AES/GCM/NoPadding"
+        const val KEY_BITS = 256
+        const val TAG_BITS = 128
+    }
+}
+
+/** The OpenAI key's Keystore alias since phase 3.1: changing it would make the stored key unreadable. */
+internal const val OPENAI_KEY_ALIAS = "questvision_openai_api_key_v1"
+
+/** The Telegram bot token's own Keystore key. */
+internal const val TELEGRAM_KEY_ALIAS = "questvision_telegram_bot_token_v1"

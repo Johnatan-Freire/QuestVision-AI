@@ -29,6 +29,7 @@ import com.questvision.camera.settings.AiSettings
 import com.questvision.camera.settings.AiSettingsStore
 import com.questvision.camera.settings.ApiKey
 import com.questvision.camera.settings.ApiKeySource
+import com.questvision.camera.telegram.AnswerListener
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
@@ -98,6 +99,8 @@ class QuestionAnalyzer
         private val client: AiClient,
         private val images: QuestionImageEncoder,
         private val settings: AiSettingsStore,
+        /** Told once the answer is stored: Telegram, when enabled. */
+        private val answers: AnswerListener = AnswerListener.None,
     ) {
         private val guard = Mutex()
         private val inFlight = HashSet<String>()
@@ -275,6 +278,7 @@ class QuestionAnalyzer
                             result.usage,
                             result.serviceTier,
                         )
+                        answers.onAnswered(questionId)
                         AnalysisResult.Answered(answer, status, result.usage)
                     }
                 }

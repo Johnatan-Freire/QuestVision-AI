@@ -66,45 +66,28 @@ data class AiSettings(
      * Requests allowed per 24 hours, counted in the request log (so restarting the app resets nothing).
      * A local brake, not a spend cap: the hard cap is the OpenAI project's limit.
      */
-    val requestsPerDay: Int = 10,
+    val requestsPerDay: Int = 75,
     /**
-     * Automatic analyses per monitoring session, on top of [requestsPerDay]: the session pauses itself
-     * when either is reached, so a screen left in front of the camera can't keep spending.
+     * Automatic sending: each monitoring session, once the user confirms its terms at the start, sends
+     * its new complete questions to OpenAI on its own (off by default). [requestsPerDay] and the stop
+     * rules (errors, credit, unknown cost) still apply; there is no cap per session.
      */
-    val analysesPerSession: Int = 10,
+    val autoSendEnabled: Boolean = false,
     /** `max_output_tokens`: visible answer plus reasoning. Too low ends in an incomplete answer. */
     val maxOutputTokens: Int = 1_500,
     /** Longest edge of the photo sent in image mode. */
     val imageMaxDimension: Int = 2_048,
     /** The user confirmed the first real request (model, mode, cost) once. */
     val firstCallConfirmed: Boolean = false,
-    /** Trial build only: the user armed the supervised trial of real automatic requests (off by default). */
-    val autoTrialArmed: Boolean = false,
-    /** The trial build ([com.questvision.camera.ai.AUTO_TRIAL_ID]) whose allowance [autoTrialStartedAt] belongs to; 0: none. */
-    val autoTrialId: Int = 0,
-    /**
-     * When that trial was first armed. Never moved by disarming and arming again: every request logged
-     * since then counts toward its one allowance.
-     */
-    val autoTrialStartedAt: Long? = null,
+    /** Send each new answer to the user's Telegram chat (off by default; needs a bot token and [telegramChatId]). */
+    val telegramEnabled: Boolean = false,
+    /** The chat the bot sends to, found from the user's message to the bot. */
+    val telegramChatId: Long? = null,
+    /** While monitoring, also send short framing tips ("vire ← esquerda") to that chat (off by default). */
+    val telegramFramingHints: Boolean = false,
 ) {
-    /** Arms trial [trialId]: its allowance starts on the first arming only. */
-    fun armingTrial(
-        trialId: Int,
-        nowMs: Long,
-    ): AiSettings =
-        if (autoTrialId == trialId && autoTrialStartedAt != null) {
-            copy(autoTrialArmed = true)
-        } else {
-            copy(autoTrialArmed = true, autoTrialId = trialId, autoTrialStartedAt = nowMs)
-        }
-
-    /** When trial [trialId]'s allowance started; null if it was never armed. */
-    fun trialStartedAt(trialId: Int): Long? = autoTrialStartedAt.takeIf { autoTrialId == trialId }
-
     companion object {
-        val requestsPerDayOptions = listOf(5, 10, 20, 50)
-        val analysesPerSessionOptions = listOf(3, 5, 10)
+        val requestsPerDayOptions = listOf(10, 20, 50, 75)
         val maxOutputTokensOptions = listOf(800, 1_500, 3_000)
         val imageMaxDimensionOptions = listOf(1_280, 1_600, 2_048)
     }
@@ -145,10 +128,7 @@ class SharedPreferencesAiSettingsStore
                     preferences
                         .getInt(REQUESTS_PER_DAY, defaults.requestsPerDay)
                         .takeIf { it in AiSettings.requestsPerDayOptions } ?: defaults.requestsPerDay,
-                analysesPerSession =
-                    preferences
-                        .getInt(ANALYSES_PER_SESSION, defaults.analysesPerSession)
-                        .takeIf { it in AiSettings.analysesPerSessionOptions } ?: defaults.analysesPerSession,
+                autoSendEnabled = preferences.getBoolean(AUTO_SEND, false),
                 maxOutputTokens =
                     preferences
                         .getInt(MAX_OUTPUT_TOKENS, defaults.maxOutputTokens)
@@ -158,9 +138,9 @@ class SharedPreferencesAiSettingsStore
                         .getInt(IMAGE_MAX_DIMENSION, defaults.imageMaxDimension)
                         .takeIf { it in AiSettings.imageMaxDimensionOptions } ?: defaults.imageMaxDimension,
                 firstCallConfirmed = preferences.getBoolean(FIRST_CALL_CONFIRMED, defaults.firstCallConfirmed),
-                autoTrialArmed = preferences.getBoolean(AUTO_TRIAL_ARMED, false),
-                autoTrialId = preferences.getInt(AUTO_TRIAL_ID, 0),
-                autoTrialStartedAt = preferences.getLong(AUTO_TRIAL_STARTED_AT, -1L).takeIf { it > 0L },
+                telegramEnabled = preferences.getBoolean(TELEGRAM_ENABLED, false),
+                telegramChatId = if (preferences.contains(TELEGRAM_CHAT_ID)) preferences.getLong(TELEGRAM_CHAT_ID, 0L) else null,
+                telegramFramingHints = preferences.getBoolean(TELEGRAM_FRAMING_HINTS, false),
             )
         }
 
@@ -173,14 +153,15 @@ class SharedPreferencesAiSettingsStore
                 .putBoolean(FLEX, settings.flexProcessing)
                 .putString(BUDGET, settings.monthlyBudgetUsd.toString())
                 .putInt(REQUESTS_PER_DAY, settings.requestsPerDay)
-                .putInt(ANALYSES_PER_SESSION, settings.analysesPerSession)
                 .putInt(MAX_OUTPUT_TOKENS, settings.maxOutputTokens)
                 .putInt(IMAGE_MAX_DIMENSION, settings.imageMaxDimension)
                 .putBoolean(FIRST_CALL_CONFIRMED, settings.firstCallConfirmed)
-                .putBoolean(AUTO_TRIAL_ARMED, settings.autoTrialArmed)
-                .putInt(AUTO_TRIAL_ID, settings.autoTrialId)
-                .putLong(AUTO_TRIAL_STARTED_AT, settings.autoTrialStartedAt ?: -1L)
-                .apply()
+                .putBoolean(AUTO_SEND, settings.autoSendEnabled)
+                .putBoolean(TELEGRAM_ENABLED, settings.telegramEnabled)
+                .putBoolean(TELEGRAM_FRAMING_HINTS, settings.telegramFramingHints)
+                .also { editor ->
+                    settings.telegramChatId?.let { editor.putLong(TELEGRAM_CHAT_ID, it) } ?: editor.remove(TELEGRAM_CHAT_ID)
+                }.apply()
         }
 
         private companion object {
@@ -190,13 +171,15 @@ class SharedPreferencesAiSettingsStore
             const val AUTOMATIC = "process_automatic_captures"
             const val FLEX = "flex_processing"
             const val BUDGET = "monthly_budget_usd"
-            const val REQUESTS_PER_DAY = "requests_per_day"
-            const val ANALYSES_PER_SESSION = "analyses_per_session"
+
+            // A new key with automatic sending (2026-11-04): the user chose 75 a day; the old key held 10.
+            const val REQUESTS_PER_DAY = "requests_per_day_v2"
             const val MAX_OUTPUT_TOKENS = "max_output_tokens"
             const val IMAGE_MAX_DIMENSION = "image_max_dimension"
             const val FIRST_CALL_CONFIRMED = "first_call_confirmed"
-            const val AUTO_TRIAL_ARMED = "auto_trial_armed"
-            const val AUTO_TRIAL_ID = "auto_trial_id"
-            const val AUTO_TRIAL_STARTED_AT = "auto_trial_started_at"
+            const val AUTO_SEND = "auto_send_enabled"
+            const val TELEGRAM_ENABLED = "telegram_enabled"
+            const val TELEGRAM_CHAT_ID = "telegram_chat_id"
+            const val TELEGRAM_FRAMING_HINTS = "telegram_framing_hints"
         }
     }

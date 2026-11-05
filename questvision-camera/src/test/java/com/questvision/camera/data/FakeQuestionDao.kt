@@ -139,6 +139,14 @@ internal class FakeQuestionDao : QuestionDao {
         )
     }
 
+    override suspend fun claimTelegram(
+        id: String,
+        updatedAt: Long,
+    ): Int {
+        val row = questions.firstOrNull { it.id == id && it.telegramStatus == TelegramStatus.NOT_REQUESTED } ?: return 0
+        return change(row.id) { it.copy(telegramStatus = TelegramStatus.PENDING, updatedAt = updatedAt) }
+    }
+
     override suspend fun updateTelegramStatus(
         id: String,
         status: TelegramStatus,

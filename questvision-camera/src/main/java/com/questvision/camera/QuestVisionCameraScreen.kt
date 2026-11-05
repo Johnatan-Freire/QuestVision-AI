@@ -16,7 +16,9 @@
 package com.questvision.camera
 
 import android.content.res.Configuration
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -245,6 +247,8 @@ private fun CameraContent(
             listener = viewModel,
         )
     val displayRotation = rememberLiveDisplayRotation()
+    // While monitoring, the screen must not dim and lock: that would pause the camera and the session.
+    KeepScreenOn(enabled = state.monitoring != MonitoringState.IDLE && state.monitoring != MonitoringState.ERROR)
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     val isOverlayOpen = state.isOverlayOpen
     val overlayOpen by rememberUpdatedState(isOverlayOpen)
@@ -484,7 +488,7 @@ private fun RealSessionDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.questvision_real_session_title)) },
-        text = { Text(stringResource(R.string.questvision_real_session_text, terms.model, terms.maxRequests, terms.leftToday)) },
+        text = { Text(stringResource(R.string.questvision_real_session_text, terms.model, terms.leftToday)) },
         confirmButton = { TextButton(onClick = onConfirm) { Text(stringResource(R.string.questvision_real_session_confirm)) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.questvision_cleanup_cancel)) } },
     )
@@ -1024,3 +1028,13 @@ private fun statusColor(status: CameraStatus): Color =
         CameraStatus.UNAVAILABLE,
         -> MaterialTheme.colorScheme.error
     }
+
+/** Keeps the display on while [enabled]; the system's screen timeout applies again otherwise. */
+@Composable
+private fun KeepScreenOn(enabled: Boolean) {
+    val window = LocalActivity.current?.window
+    DisposableEffect(window, enabled) {
+        if (enabled) window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+    }
+}

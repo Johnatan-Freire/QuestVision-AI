@@ -217,6 +217,16 @@ class QuestionRepository internal constructor(
 
     suspend fun question(id: String): QuestionEntity? = serialized { dao.question(id) }
 
+    /** Claims [id]'s Telegram delivery, so it is sent at most once; false when it already was claimed. */
+    suspend fun claimTelegram(id: String): Boolean = serialized { dao.claimTelegram(id, clock()) == 1 }
+
+    suspend fun finishTelegram(
+        id: String,
+        status: TelegramStatus,
+    ) {
+        serialized { dao.updateTelegramStatus(id, status, clock()) }
+    }
+
     /** The photo of [question] on disk. */
     fun fileOf(question: QuestionEntity): File = captures.resolve(question.imagePath)
 

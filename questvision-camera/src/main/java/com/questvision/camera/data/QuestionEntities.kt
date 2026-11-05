@@ -80,12 +80,17 @@ enum class AiRequestOutcome {
     UNKNOWN,
 }
 
-/** Delivery of the answer to Telegram (a later phase). */
+/** Delivery of the answer to Telegram (phase 4). Each answer is sent at most once. */
 enum class TelegramStatus {
     NOT_REQUESTED,
+
+    /** Claimed for sending; stays so if the app stopped meanwhile (never resent automatically). */
     PENDING,
     SENT,
     FAILED,
+
+    /** No reply from Telegram (connection lost, timeout): it may have arrived. Never resent automatically. */
+    UNKNOWN,
 }
 
 /** A monitoring session; its id is the label recorded in automatic captures' file names. */

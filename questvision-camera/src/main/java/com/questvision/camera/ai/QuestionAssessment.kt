@@ -93,6 +93,8 @@ data class AssessmentConfig(
     val maxQuestionGap: Float = 2.0f,
     /** Within this fraction of the top or bottom edge, the question may continue off-screen. */
     val edgeMargin: Float = 0.03f,
+    /** Within this fraction of the left or right edge, a line may continue off-screen. */
+    val sideMargin: Float = 0.015f,
 )
 
 /** How a question offers its answers. */
@@ -193,10 +195,58 @@ private fun kindOf(text: String): Pair<Kind, String> {
     return Kind.OTHER to ""
 }
 
-private fun linesOf(text: RecognizedText): List<Line> =
-    text.lines.indices
-        .map { i -> Line(text.lines[i].joinToString(" ") { it.text }.trim(), text.lines[i], text.boxOf(i)) }
+private fun linesOf(text: RecognizedText): List<Line> {
+    val ordered = questionOrder(text)
+    return ordered.lines.indices
+        .map { i -> Line(ordered.lines[i].joinToString(" ") { it.text }.trim(), ordered.lines[i], ordered.boxOf(i)) }
         .filter { it.text.isNotEmpty() }
+}
+
+/** Fewest alternatives of a lettered or numbered question (Certo/Errado has two). */
+private const val MIN_LABELED_ALTERNATIVES = 3
+
+/** Lines starting this much left of the alternatives are beside the question (a sidebar, the room). */
+private const val COLUMN_SLACK = 0.05f
+
+/** …or this much right of them: another element on the same rows (a side panel, icons, a clock). */
+private const val COLUMN_MAX_INDENT = 0.15f
+
+/**
+ * [text] rearranged so the question reads top to bottom, whatever ML Kit's block order: the lines in
+ * the alternatives' column (starting at their left edge, or slightly indented) in order of position,
+ * with everything beside them (browser tabs and bookmarks, side panels, icons, the room around the
+ * monitor) moved before them, or after them when it lies below the column (a button or an input bar
+ * still follows the question). So nothing beside the question ever lands inside it. Unchanged when
+ * there are no line boxes or fewer than two answer lines. Idempotent.
+ */
+fun questionOrder(text: RecognizedText): RecognizedText {
+    val boxes = text.boxes
+    if (boxes.size != text.lines.size || boxes.any { it == null }) return text
+
+    fun lineText(i: Int) = text.lines[i].joinToString(" ") { it.text }.trim()
+    val answerLefts =
+        text.lines.indices
+            .filter { i ->
+                lineText(i).let {
+                    LETTER_ALTERNATIVE.containsMatchIn(it) || NUMBER_ALTERNATIVE.containsMatchIn(it) ||
+                        JUDGMENT.containsMatchIn(it)
+                }
+            }.map { boxes[it]!!.left }
+            .sorted()
+    if (answerLefts.size < 2) return text
+    val columnLeft = answerLefts[answerLefts.size / 2]
+    val (column, beside) =
+        text.lines.indices.partition { i ->
+            val left = boxes[i]!!.left
+            left >= columnLeft - COLUMN_SLACK && left <= columnLeft + COLUMN_MAX_INDENT
+        }
+    val byPosition = compareBy<Int>({ boxes[it]!!.top }, { boxes[it]!!.left })
+    val columnLines = column.sortedWith(byPosition)
+    val columnBottom = columnLines.maxOf { boxes[it]!!.bottom }
+    val (below, aboveOrBeside) = beside.partition { boxes[it]!!.top > columnBottom }
+    val order = aboveOrBeside.sortedWith(byPosition) + columnLines + below.sortedWith(byPosition)
+    return RecognizedText(order.map { text.lines[it] }, order.map { boxes[it] }, text.contentRotation)
+}
 
 /**
  * The newest question on screen, found by its content: the last complete run of answer lines (A, B,
@@ -238,12 +288,15 @@ private fun locate(
         }
     }
 
-    // Something must follow the last answer (the next message, an input bar, the taskbar), and the
-    // question must not touch the photo's edges; otherwise it may continue off-screen.
+    // The question must end visibly (blank space or something below its last answer) and not touch
+    // the photo's edges; otherwise it may continue off-screen.
     val endBox = lines[end].box
     val startBox = lines[start].box
-    if (end == lines.lastIndex || (endBox != null && endBox.bottom > 1f - config.edgeMargin)) issues += AssessmentIssue.POSSIBLY_CUT
+    if (cutBelow(lines, end, endBox, config)) issues += AssessmentIssue.POSSIBLY_CUT
     if (title == null && startBox != null && startBox.top < config.edgeMargin) issues += AssessmentIssue.POSSIBLY_CUT
+    // A line running into the photo's left or right edge loses its words there.
+    val sideCut = (start..end).any { i -> lines[i].box?.let { it.left < config.sideMargin || it.right > 1f - config.sideMargin } == true }
+    if (sideCut) issues += AssessmentIssue.POSSIBLY_CUT
 
     val number =
         title?.let {
@@ -257,6 +310,29 @@ private fun locate(
 }
 
 private val ANSWER_KINDS = setOf(Kind.LETTER, Kind.NUMBER, Kind.JUDGMENT)
+
+/**
+ * Whether the question may go on below its last line [end]. With line boxes, the photo must show
+ * free space below it ([bottomRoom]): a blank page is as good an end as a button or an input bar
+ * (field photos of 2026-11-04: nothing legible below D, yet the question was whole). Without boxes
+ * (stored text), something must follow it.
+ */
+private fun cutBelow(
+    lines: List<Line>,
+    end: Int,
+    endBox: LineBox?,
+    config: AssessmentConfig,
+): Boolean = if (endBox != null) endBox.bottom > 1f - bottomRoom(endBox, config) else end == lines.lastIndex
+
+/**
+ * Free space the photo must show below the last answer line for the question to have ended there:
+ * one more alternative (a line and its spacing) would fit in less. Large text needs more than
+ * [AssessmentConfig.edgeMargin] (field photo of 2026-11-04: C and D were just below the edge).
+ */
+private fun bottomRoom(
+    last: LineBox,
+    config: AssessmentConfig,
+): Float = maxOf(config.edgeMargin, last.height * 1.5f)
 
 /**
  * The last line of the alternative starting at [labelLine]: a wrapped alternative continues on the
@@ -465,6 +541,11 @@ fun assessQuestion(
     val visual = pointsAtVisual || mathChars >= config.mathCharsForImage
 
     val alternatives = alternativesOf(lines, location)
+    // Lettered or numbered questions have three or more: with two, a label was likely misread or
+    // the rest is off the photo (field photo of 2026-11-04: "C) 4" read as "4", D missing).
+    if (location.format != QuestionFormat.JUDGMENT && alternatives.size < MIN_LABELED_ALTERNATIVES) {
+        issues += AssessmentIssue.ALTERNATIVES_OUT_OF_SEQUENCE
+    }
     return QuestionAssessment(
         questionNumber = location.number,
         format = location.format,
@@ -706,3 +787,82 @@ private fun overlapShare(
 }
 
 private fun stripAccents(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFD).replace(Regex("""\p{Mn}+"""), "")
+
+/**
+ * A short framing tip for the user at the computer, in the screen's terms (the text upright, as they
+ * read it), whatever the phone's rotation on its stand.
+ */
+enum class FramingHint {
+    /** The question goes on past the left edge. */
+    LEFT,
+    RIGHT,
+    UP,
+    DOWN,
+
+    /** It is cut on opposite sides: the whole question doesn't fit. */
+    FARTHER,
+
+    /** The text is too small to read reliably. */
+    CLOSER,
+
+    /** No question (no alternatives) in the photo. */
+    NO_QUESTION,
+
+    /** Too many doubtful words: out of focus, glare or movement. */
+    BLURRY,
+
+    /** The image never settles long enough for a capture. */
+    UNSTABLE,
+}
+
+/** Lines thinner than this fraction of the photo's height are too small to read reliably. */
+private const val MIN_LINE_HEIGHT = 0.012f
+
+/**
+ * What to change so the next photo of [text] gets the whole question; null when [assessment] is
+ * usable or there is nothing specific to advise. Only the question's own lines count, never the rest
+ * of the screen.
+ */
+fun framingHint(
+    text: RecognizedText,
+    assessment: QuestionAssessment,
+    config: AssessmentConfig = AssessmentConfig(),
+): FramingHint? {
+    if (assessment.usable) return null
+    val lines = linesOf(text)
+    val location = locate(lines, config) ?: return FramingHint.NO_QUESTION
+    val startBox = lines[location.start].box
+    val endBox = lines[location.end].box
+    val cutBottom = cutBelow(lines, location.end, endBox, config)
+    // Its start wasn't found and the text of its column reaches the top edge: it begins further up.
+    val columnLeft =
+        location.labels
+            .mapNotNull { lines[it.first].box?.left }
+            .sorted()
+            .let { it.getOrNull(it.size / 2) }
+    val columnTop =
+        columnLeft?.let { left ->
+            (0 until location.answersStart)
+                .mapNotNull { lines[it].box }
+                .filter { it.left >= left - COLUMN_SLACK && it.left <= left + COLUMN_MAX_INDENT }
+                .minOfOrNull { it.top }
+        }
+    val cutTop =
+        (startBox != null && startBox.top < config.edgeMargin) ||
+            (AssessmentIssue.NO_QUESTION_START in assessment.issues && columnTop != null && columnTop < config.edgeMargin)
+    val ownBoxes = (listOf(location.start) + location.labels.map { it.first }).mapNotNull { lines[it].box }
+    val questionBoxes = (location.start..location.end).mapNotNull { lines[it].box }
+    val cutLeft = questionBoxes.any { it.left < config.sideMargin }
+    val cutRight = questionBoxes.any { it.right > 1f - config.sideMargin }
+    val heights = ownBoxes.map { it.height }.sorted()
+    return when {
+        (cutTop && cutBottom) || (cutLeft && cutRight) -> FramingHint.FARTHER
+        cutBottom -> FramingHint.DOWN
+        cutTop -> FramingHint.UP
+        cutLeft -> FramingHint.LEFT
+        cutRight -> FramingHint.RIGHT
+        heights.isNotEmpty() && heights[heights.size / 2] < MIN_LINE_HEIGHT -> FramingHint.CLOSER
+        AssessmentIssue.LOW_CONFIDENCE in assessment.issues -> FramingHint.BLURRY
+        else -> null
+    }
+}

@@ -15,12 +15,12 @@
  */
 package com.questvision.camera
 
-import com.questvision.camera.ai.ArmableTrialPolicy
 import com.questvision.camera.ai.AutoEvent
 import com.questvision.camera.ai.AutoPauseReason
 import com.questvision.camera.ai.FakeAiClient
 import com.questvision.camera.ai.FixedAutoSendPolicy
 import com.questvision.camera.ai.InMemoryAiSettingsStore
+import com.questvision.camera.ai.SettingsAutoSendPolicy
 import com.questvision.camera.ai.answerJson
 import com.questvision.camera.ai.autoAnalysis
 import com.questvision.camera.ai.completed
@@ -106,12 +106,12 @@ class QuestVisionCameraViewModelTest {
 
     private fun newViewModel(
         allowRequests: Boolean = false,
-        trial: Boolean = false,
+        autoSend: Boolean = false,
     ) = CaptureRepository(root, dispatcher)
         .let { captures ->
             val repository = QuestionRepository(dao, requests, DirectTransactions, captures, dispatcher)
-            if (trial) settings.settings = settings.settings.armingTrial(trialId = 1, nowMs = 1L)
-            val policy = if (trial) ArmableTrialPolicy(settings, trialId = 1) else FixedAutoSendPolicy(allowRequests)
+            if (autoSend) settings.settings = settings.settings.copy(autoSendEnabled = true)
+            val policy = if (autoSend) SettingsAutoSendPolicy(settings) else FixedAutoSendPolicy(allowRequests)
             QuestVisionCameraViewModel(
                 captures,
                 ocr,
@@ -563,6 +563,7 @@ class QuestVisionCameraViewModelTest {
     // new questions keep being captured, stored and kept for later.
     @Test
     fun atTheLimit_theCameraKeepsCapturing_andNothingIsSent() {
+        settings.settings = settings.settings.copy(requestsPerDay = 10)
         kotlinx.coroutines.runBlocking {
             repeat(10) {
                 requests.insert(
@@ -735,17 +736,16 @@ class QuestVisionCameraViewModelTest {
         assertFalse(first.exists() || second.exists())
     }
 
-    // Phase 3.6: a session with real requests starts only after explicit consent to its terms.
+    // A session with automatic sending starts only after explicit consent to its terms.
     @Test
     fun aRealSession_asksForConsent_andDecliningStartsNothing() {
-        val viewModel = newViewModel(trial = true)
+        val viewModel = newViewModel(autoSend = true)
 
         viewModel.startMonitoring()
 
         with(viewModel.state.realSessionTerms!!) {
             assertEquals("gpt-6-luna", model)
-            assertEquals(3, maxRequests)
-            assertEquals(10, leftToday)
+            assertEquals(75, leftToday)
         }
         assertEquals(MonitoringState.IDLE, viewModel.state.monitoring)
 

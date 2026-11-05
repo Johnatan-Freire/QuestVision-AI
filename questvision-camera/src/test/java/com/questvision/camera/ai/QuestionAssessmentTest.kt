@@ -63,12 +63,15 @@ class QuestionAssessmentTest {
         val skipped = assessQuestion(screen(q.title, q.statement, "A) DHCP", "C) DNS", "D) SSH", "Pergunte ao ChatGPT"))
         val notFromA = assessQuestion(screen(q.title, q.statement, "C) DNS", "D) SSH", "E) SMTP", "Pergunte ao ChatGPT"))
         val none = assessQuestion(screen(q.title, q.statement, "Pergunte ao ChatGPT"))
-        val noStatement = assessQuestion(screen("Questão 02", "A) DHCP", "B) DNS", "Pergunte ao ChatGPT"))
+        val noStatement = assessQuestion(screen("Questão 02", "A) DHCP", "B) DNS", "C) FTP", "Pergunte ao ChatGPT"))
+        // Two lettered alternatives: a label was misread or the rest is off the photo.
+        val onlyTwo = assessQuestion(screen(q.title, q.statement, "A) DHCP", "B) DNS", "Pergunte ao ChatGPT"))
 
         assertEquals(setOf(AssessmentIssue.ALTERNATIVES_OUT_OF_SEQUENCE), skipped.issues)
         assertEquals(setOf(AssessmentIssue.ALTERNATIVES_OUT_OF_SEQUENCE), notFromA.issues)
         assertEquals(setOf(AssessmentIssue.NO_ALTERNATIVES), none.issues)
         assertEquals(setOf(AssessmentIssue.NO_STATEMENT), noStatement.issues)
+        assertEquals(setOf(AssessmentIssue.ALTERNATIVES_OUT_OF_SEQUENCE), onlyTwo.issues)
     }
 
     // 4. Blurred: the words come out with low confidence.
@@ -177,8 +180,13 @@ class QuestionAssessmentTest {
     }
 
     @Test
-    fun aQuestionTouchingTheTopEdge_mayBeCut() {
-        assertTrue(AssessmentIssue.POSSIBLY_CUT in assessQuestion(untitledScreen(statementTop = 0.01f)).issues)
+    fun aQuestionTouchingTheTopEdge_isNotSent_andTheTipIsUp() {
+        // Nothing above the statement: its start can't be told, so it may begin further up.
+        val screen = untitledScreen(statementTop = 0.01f)
+        val assessment = assessQuestion(screen)
+
+        assertFalse(assessment.usable)
+        assertEquals(FramingHint.UP, framingHint(screen, assessment))
     }
 
     @Test

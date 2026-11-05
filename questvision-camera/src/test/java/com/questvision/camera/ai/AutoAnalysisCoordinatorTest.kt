@@ -224,6 +224,7 @@ class AutoAnalysisCoordinatorTest {
     @Test
     fun theDailyLimit_pausesTheSession_andSendsNothing() =
         runTest(dispatcher) {
+            settings.settings = settings.settings.copy(requestsPerDay = 10)
             repeat(
                 10,
             ) {
@@ -243,13 +244,22 @@ class AutoAnalysisCoordinatorTest {
             assertEquals(AiStatus.PENDING, status(q))
         }
 
-    // 11: the session limit stops sending for the rest of the session, even after pause/resume.
+    // 11: a policy's session limit stops sending for the rest of the session, even after pause/resume.
     @Test
     fun theSessionLimit_stopsSending_untilANewSession() =
         runTest(dispatcher) {
-            settings.settings = settings.settings.copy(analysesPerSession = 3)
             val client = FakeAiClient(completed())
-            val auto = coordinator(client, this)
+            val auto =
+                autoAnalysis(
+                    repository,
+                    client,
+                    settings,
+                    keys = keys,
+                    policy = FixedAutoSendPolicy(true, maxRequestsPerSession = 3),
+                ).apply {
+                    attach(this@runTest)
+                    startSession(consented = true)
+                }
             val questions = (1..3).map { question(it) } + question(1, sequence = 4) + question(2, sequence = 5)
 
             questions.forEachIndexed { i, q -> auto.submit(q, assessment(listOf(1, 2, 3, 1, 2)[i])) }
@@ -271,6 +281,7 @@ class AutoAnalysisCoordinatorTest {
     @Test
     fun theDailyLimit_doesNotLiftByItself_whenTheWindowFreesUp() =
         runTest(dispatcher) {
+            settings.settings = settings.settings.copy(requestsPerDay = 10)
             repeat(
                 10,
             ) {

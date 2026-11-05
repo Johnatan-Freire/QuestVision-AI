@@ -20,8 +20,11 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.questvision.camera.ai.AutoAnalysisCoordinator
+import com.questvision.camera.ai.FramingHint
 import com.questvision.camera.ai.QuestionAssessment
 import com.questvision.camera.ai.assessQuestion
+import com.questvision.camera.ai.framingHint
+import com.questvision.camera.ai.questionOrder
 import com.questvision.camera.data.AiStatus
 import com.questvision.camera.data.DeleteResult
 import com.questvision.camera.data.QuestionEntity
@@ -38,6 +41,7 @@ import com.questvision.camera.recognition.RecognizedText
 import com.questvision.camera.recognition.TextFingerprint
 import com.questvision.camera.recognition.TextRecognitionEngine
 import com.questvision.camera.recognition.TextVerdict
+import com.questvision.camera.telegram.FramingHints
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -60,6 +64,9 @@ private const val OCR_TAG = "QuestVisionOcr"
 /** How often the free storage is checked while monitoring. */
 private const val ROOM_CHECK_INTERVAL_MS = 5_000L
 
+/** Monitoring this long without the image holding still sends a framing tip. */
+private const val UNSETTLED_TIP_MS = 15_000L
+
 /** A recognition taking longer than this counts as failed. */
 private const val OCR_TIMEOUT_MS = 15_000L
 
@@ -71,6 +78,8 @@ class QuestVisionCameraViewModel
         private val textRecognition: TextRecognitionEngine,
         private val questionRepository: QuestionRepository,
         private val autoAnalysis: AutoAnalysisCoordinator,
+        /** Framing tips for the user at the computer (Telegram, when switched on). */
+        private val framing: FramingHints = FramingHints.None,
     ) : ViewModel(),
         CameraSessionListener {
         private val _uiState =
@@ -341,6 +350,7 @@ class QuestVisionCameraViewModel
             val startedNanos = System.nanoTime()
             val ticket = monitoringSession.onFrame(frame, canCaptureNow)
             Log.d(DETECTION_TAG, "detector step ${(System.nanoTime() - startedNanos) / 1_000}µs")
+            trackSettling(frame.timestampMs)
             if (ticket == null) {
                 _uiState.value = state.withMonitoring()
                 return
@@ -353,6 +363,23 @@ class QuestVisionCameraViewModel
             autoCaptureRequestedAtNanos = System.nanoTime()
             Log.i(DETECTION_TAG, "auto capture #${ticket.sequence} requested -> ${file.name} because ${decisionReason()}")
             _uiState.value = state.copy(pendingCapture = file).withMonitoring()
+        }
+
+        // Since when the image hasn't settled during monitoring (null while still or not monitoring).
+        private var unsettledSinceMs: Long? = null
+
+        /** An image that never holds still for long (focus hunting, a shaky stand) is worth a tip. */
+        private fun trackSettling(nowMs: Long) {
+            val metrics = lastMetrics
+            if (!monitoringSession.state.isAnalyzing || metrics == null || metrics.stableForMs > 0) {
+                unsettledSinceMs = null
+                return
+            }
+            val since = unsettledSinceMs ?: nowMs.also { unsettledSinceMs = it }
+            if (nowMs - since >= UNSETTLED_TIP_MS) {
+                framing.report(FramingHint.UNSTABLE)
+                unsettledSinceMs = nowMs
+            }
         }
 
         override fun onFrameAnalysisUnavailable() {
@@ -420,7 +447,8 @@ class QuestVisionCameraViewModel
                     try {
                         val text =
                             try {
-                                val raw = withTimeout(OCR_TIMEOUT_MS) { textRecognition.recognize(file) }
+                                // In question order: what is stored, compared and sent reads like the screen.
+                                val raw = questionOrder(withTimeout(OCR_TIMEOUT_MS) { textRecognition.recognize(file) })
                                 recognized = raw
                                 assessment = assessQuestion(raw)
                                 TextFingerprint.of(raw)
@@ -491,9 +519,11 @@ class QuestVisionCameraViewModel
                 val row = record(file, CaptureOrigin.AUTOMATIC, sessionLabel, ticket.sequence, recognized, AiStatus.PENDING)
                 if (row != null && assessment != null) {
                     if (assessment.usable) {
+                        framing.report(null)
                         notify(Notice.AUTO_CAPTURE_SAVED)
                         autoAnalysis.submit(row, assessment)
                     } else {
+                        recognized?.let { framingHint(it, assessment) }?.let(framing::report)
                         notify(Notice.INCOMPLETE_SAVED)
                         autoAnalysis.reportIncomplete(assessment)
                     }
@@ -501,6 +531,7 @@ class QuestVisionCameraViewModel
                 onCaptureStored()
             } else {
                 captureRepository.delete(file)
+                if (decision.verdict == TextVerdict.UNREADABLE) framing.report(FramingHint.NO_QUESTION)
                 notify(
                     if (decision.verdict == TextVerdict.UNREADABLE) {
                         Notice.UNREADABLE_IGNORED

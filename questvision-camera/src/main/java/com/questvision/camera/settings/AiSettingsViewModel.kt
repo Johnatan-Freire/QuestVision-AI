@@ -17,9 +17,6 @@ package com.questvision.camera.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.questvision.camera.ai.AUTO_TRIAL_ID
-import com.questvision.camera.ai.TRIAL_MAX_REQUESTS_PER_SESSION
-import com.questvision.camera.data.QuestionRepository
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -31,7 +28,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-import javax.inject.Named
 
 data class AiSettingsUiState(
     val keyState: ApiKeyState = ApiKeyState.Checking,
@@ -42,10 +38,6 @@ data class AiSettingsUiState(
     /** A save or removal is in progress. */
     val busy: Boolean = false,
     val settings: AiSettings = AiSettings(),
-    /** This is the trial build: the switch to arm real automatic requests is shown. */
-    val trialAvailable: Boolean = false,
-    /** Requests this trial still allows (its one allowance minus those logged since it was first armed). */
-    val trialRequestsLeft: Int = TRIAL_MAX_REQUESTS_PER_SESSION,
 )
 
 /**
@@ -58,10 +50,8 @@ class AiSettingsViewModel
     constructor(
         private val keyRepository: OpenAiKeyRepository,
         private val settingsStore: AiSettingsStore,
-        private val questions: QuestionRepository,
-        @Named(AUTO_TRIAL_ID) private val trialId: Int,
     ) : ViewModel() {
-        private val _uiState = MutableStateFlow(AiSettingsUiState(settings = settingsStore.load(), trialAvailable = trialId > 0))
+        private val _uiState = MutableStateFlow(AiSettingsUiState(settings = settingsStore.load()))
         val uiState: StateFlow<AiSettingsUiState> = _uiState.asStateFlow()
 
         init {
@@ -69,7 +59,6 @@ class AiSettingsViewModel
                 val keyState = keyRepository.refresh()
                 _uiState.update { it.copy(keyState = keyState) }
             }
-            if (trialId > 0) viewModelScope.launch { refreshTrial() }
         }
 
         /** Stores [raw] encrypted, replacing any previous key. */
@@ -110,35 +99,8 @@ class AiSettingsViewModel
 
         fun selectRequestsPerDay(limit: Int) = updateSettings { it.copy(requestsPerDay = limit) }
 
-        fun selectAnalysesPerSession(limit: Int) = updateSettings { it.copy(analysesPerSession = limit) }
-
-        /**
-         * Trial build only: arms or disarms the trial of real automatic requests (each session still
-         * asks for consent). The first arming starts its one allowance of
-         * [TRIAL_MAX_REQUESTS_PER_SESSION]; once that is used up it can't be armed again.
-         */
-        fun setAutoTrialArmed(
-            armed: Boolean,
-            nowMs: Long = System.currentTimeMillis(),
-        ) {
-            if (trialId <= 0) return
-            if (!armed) {
-                updateSettings { it.copy(autoTrialArmed = false) }
-                return
-            }
-            viewModelScope.launch {
-                if (refreshTrial() > 0) updateSettings { it.armingTrial(trialId, nowMs) }
-            }
-        }
-
-        private suspend fun refreshTrial(): Int {
-            val left =
-                settingsStore.load().trialStartedAt(trialId)?.let { since ->
-                    (TRIAL_MAX_REQUESTS_PER_SESSION - questions.aiRequestsSince(since)).coerceAtLeast(0)
-                } ?: TRIAL_MAX_REQUESTS_PER_SESSION
-            _uiState.update { it.copy(trialRequestsLeft = left) }
-            return left
-        }
+        /** Automatic sending on or off; each session still asks for the user's consent when it starts. */
+        fun setAutoSend(enabled: Boolean) = updateSettings { it.copy(autoSendEnabled = enabled) }
 
         fun selectMaxOutputTokens(tokens: Int) = updateSettings { it.copy(maxOutputTokens = tokens) }
 

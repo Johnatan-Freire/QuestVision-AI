@@ -131,6 +131,16 @@ interface QuestionDao {
         updatedAt: Long,
     ): Int
 
+    /** NOT_REQUESTED → PENDING, atomically; 0 when the delivery was already claimed. */
+    @Query(
+        "UPDATE questions SET telegram_status = 'PENDING', updated_at = :updatedAt " +
+            "WHERE id = :id AND telegram_status = 'NOT_REQUESTED'",
+    )
+    suspend fun claimTelegram(
+        id: String,
+        updatedAt: Long,
+    ): Int
+
     @Query("UPDATE questions SET telegram_status = :status, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateTelegramStatus(
         id: String,

@@ -2528,6 +2528,248 @@ qualquer parte da página, além do teclado; o fundo ficou levemente cinza.
 Telegram, por um bot com token criptografado. A mensagem terá número, letra e texto da alternativa.
 O teste da 3.6 deve ser desarmado e fica com 1 de 3 envios validado.
 
+## 3r. Fase 4: envio das respostas ao Telegram (2026-11-04, não commitada)
+
+**Decisões do usuário (2026-11-04):**
+
+- Bot do Telegram pela Bot API (HTTPS, `api.telegram.org`), sem servidor próprio. É o segundo
+  serviço remoto do app, autorizado pelo usuário.
+- A mensagem leva número, letra e texto da alternativa (ex.: "Questão 2: D) GROUP BY"), nunca o
+  enunciado, a explicação ou a foto.
+- A Fase 3.6 fica com 1 de 3 envios validado. O teste deve ser desarmado.
+
+**Implementado (pacote `telegram`):**
+
+- **Token:** `TelegramToken` não se imprime (máscara `…AbCd`) e tem o formato validado localmente.
+  - `TelegramTokenRepository` grava o token cifrado em `no_backup/secure/telegram_bot_token.bin`.
+  - O token usa a **própria chave do Keystore** (`questvision_telegram_bot_token_v1`). Por isso,
+    remover o token não afeta a chave da OpenAI, que segue com o alias original.
+- **`TelegramClient`:**
+  - `sendMessage` em texto puro, sem `parse_mode`;
+  - `getUpdates` sem `offset`, para detectar o chat da última mensagem privada sem consumir
+    atualizações;
+  - uma requisição por chamada, sem nova tentativa;
+  - erros mapeados para códigos;
+  - nenhum log (a URL contém o token).
+- **`TelegramNotifier`**, avisado pelo `QuestionAnalyzer` sempre que uma resposta é salva (manual
+  ou automática):
+  - envia só com o envio ligado e o chat definido;
+  - a reivindicação atômica em SQLite (`telegram_status`: NOT_REQUESTED → PENDING) garante **no
+    máximo uma mensagem por questão**, mesmo depois de reiniciar o app;
+  - o resultado fica em `telegram_status`: `SENT`, `FAILED` ou o novo `UNKNOWN` (sem resposta do
+    Telegram), e nunca é reenviado automaticamente;
+  - respostas anteriores ao envio ligado não são enviadas;
+  - envia uma mensagem por vez, num escopo próprio, sem atrasar a análise.
+- **Banco:** usa a coluna `telegram_status`, que já existia desde a v1. Nenhuma migração: o esquema
+  continua na v3. O valor `UNKNOWN` foi acrescentado ao enum sem mudar o esquema.
+- **Configurações** (seção Telegram, em tela protegida contra captura):
+  - token: salvar, substituir e remover;
+  - "Detectar chat";
+  - "Enviar teste";
+  - interruptor "Enviar respostas ao Telegram", desligado por padrão e habilitado só com token e
+    chat;
+  - último envio;
+  - aviso de privacidade.
+  - Preferências novas: `telegram_enabled` e `telegram_chat_id`.
+
+**Testes:**
+
+- **JVM: 304/304.** São 20 novos em `TelegramNotifierTest`, `TelegramClientTest` e
+  `TelegramTokenRepositoryTest`. Eles cobrem:
+  - envio único, inclusive após reinício;
+  - envio desligado e sem chat;
+  - análise que falhou;
+  - resposta perdida (`UNKNOWN`, sem reenvio);
+  - recusa do Telegram;
+  - falta de token;
+  - respostas anteriores não enviadas;
+  - formatos da mensagem;
+  - URL, corpo e cabeçalhos (o token só no caminho);
+  - mapeamento de erros;
+  - detecção de chat;
+  - cifra própria do token.
+- `spotlessCheck` e os builds debug, trial e de testes ✅.
+- **Instalação no M52** (2026-11-04, 04:13, `install -r`): fotos, chave da OpenAI, banco e
+  configurações preservados.
+- **Ainda não validado:** nenhuma chamada real ao Telegram. Depende do token do bot do usuário.
+
+**Configuração feita pelo usuário (2026-11-04):**
+
+- bot criado no @BotFather e token salvo, cifrado (termina em `…FZf4`);
+- `/start` enviado e chat detectado ("Chat com Johnatan");
+- envio ao Telegram ainda desligado;
+- teste da 3.6 desarmado.
+
+**Dicas de enquadramento** (pedido do usuário, mensagens curtas):
+
+- **Formato:** "Enquadramento" na primeira linha e a dica na segunda.
+- **Dicas:**
+  - `vire ← esquerda`, `vire → direita`, `vire ↑ cima`, `vire ↓ baixo`;
+  - `afaste` (cortada em lados opostos);
+  - `aproxime` (texto pequeno demais);
+  - `sem questões`;
+  - `borrado: toque no texto`;
+  - `instável: toque no texto` (15 s de monitoramento sem a imagem parar).
+- As direções são dadas em relação à tela do computador (texto na posição de leitura), qualquer que
+  seja a rotação do celular.
+- **Cálculo:** `framingHint` usa só as linhas da própria questão (o início e as alternativas).
+- **Envio:** `TelegramFramingHints` manda, durante o monitoramento, no máximo uma dica a cada 20 s e
+  a mesma dica no máximo a cada 60 s. Uma captura boa zera a repetição.
+- **Interruptor:** "Enviar dicas de enquadramento", desligado por padrão. Exige o envio de respostas
+  ligado.
+- **Privacidade e custo:** só a dica sai do celular, sem custo de OpenAI.
+
+**Tela ligada durante o monitoramento:** com uma sessão ativa ou pausada, a janela usa
+`FLAG_KEEP_SCREEN_ON`. Assim o celular não apaga nem bloqueia e não pausa a câmera. Ao parar, o
+tempo limite normal da tela volta a valer. Com o celular bloqueado o app não funciona: a câmera é
+liberada.
+
+**Testes:**
+
+- **JVM: 316/316.** São 12 novos: `FramingHintTest` (8: questão inteira, cortes embaixo, em cima,
+  nos dois extremos e nas laterais, texto pequeno, borrado, sem questão) e
+  `TelegramFramingHintsTest` (4: formato, limite de frequência, reinício após captura boa,
+  interruptores).
+- Builds e `spotlessCheck` ✅.
+- Instalado com `install -r` em 2026-11-04 às 14:06. Dados, token e chat preservados.
+
+## 3s. Sessão automática com Telegram e isolamento da questão na tela (2026-11-04, não commitada)
+
+**Sessão real** `20261104-141610` (teste armado e consentido pelo usuário; 2 chamadas de cerca de
+US$ 0,0001 cada):
+
+- **Funcionou:**
+  - respostas automáticas entregues ao Telegram (`telegram_status` SENT);
+  - dicas de "Enquadramento" recebidas pelo usuário;
+  - tela ligada durante a sessão;
+  - teto de 3 atingido, com desarme automático e a captura seguinte não enviada.
+- **Problemas** (navegador fora da tela cheia):
+  - a Questão 1, já respondida em outra sessão, foi enviada de novo;
+  - a Questão 2 foi julgada "pouco legível" e nunca foi enviada;
+  - a Questão 3 foi enviada com o código embaralhado e sem a D. A IA respondeu "não foi possível
+    determinar (revisar)".
+- **Causa:** as linhas seguiam a ordem dos blocos do ML Kit. Abas, favoritos e itens laterais
+  entravam no meio da questão, e o enunciado ficava depois das alternativas. Isso afetava a
+  avaliação, o texto salvo e enviado e a detecção de questão repetida.
+
+**Correção:**
+
+- **`questionOrder`:** acha a coluna das alternativas (a borda esquerda mediana de "A)", "1)" e
+  "Certo") e ordena as linhas dessa coluna por posição. O que está ao lado ou acima vai antes; o que
+  está abaixo, depois. Por isso nada de fora entra na questão. Vale na avaliação, na região do
+  recorte, nas dicas e no texto salvo, comparado e enviado (aplicado logo após o OCR).
+- **Corte lateral:** uma linha da questão encostada na borda esquerda ou direita torna a questão
+  `POSSIBLY_CUT` e gera a dica "vire ← esquerda" ou "vire → direita".
+- **Espaço abaixo da última alternativa:** precisa haver pelo menos 1,5 altura de linha livre.
+  Com letra grande, a próxima alternativa cabia nos 3 % finais sem aparecer.
+- **Mínimo de 3 alternativas:** questões com letras ou números exigem 3; com 2, um rótulo foi mal
+  lido ou o resto saiu da foto. Certo/Errado continua com 2.
+- O texto do problema de corte passou a ser "possivelmente cortada na borda da imagem".
+
+**Verificação:**
+
+- **JVM: 322/322.** `QuestionOrderTest` (6) reproduz as capturas reais: a Questão 2 em ordem e
+  limpa, o corte lateral com a dica, a ordem estável, a mesma questão com outro entorno reconhecida
+  como repetida e a Questão 3 com alternativas escondidas abaixo.
+  - Três testes antigos descreviam linhas em posições impossíveis numa tela real e foram ajustados,
+    mantendo o que garantem.
+- **Diagnóstico com as 12 fotos reais da sessão no M52** (cópias temporárias no app de testes,
+  removidas depois):
+
+  | Questão | Resultado | Leitura |
+  |---|---|---|
+  | 1 (2 fotos boas) | válidas | limpas: agora reconhecidas como já respondidas |
+  | 1 (3 fotos cortadas) | barradas | corte |
+  | 2 (3 fotos) | barradas por `POSSIBLY_CUT` | número 2, 4 alternativas, sem itens do navegador; o enunciado sai pela borda direita (dica "vire → direita") |
+  | 3 (2 fotos) | barradas | alternativas insuficientes ou corte |
+
+- **Instrumentados: 36/36.**
+- **Instalada com `install -r`** (2026-11-04, 15:03): os 56 arquivos do backup de 04/11 estão
+  idênticos e os 12 novos são da sessão.
+- **Pendente:** uma nova sessão real exigiria outra versão `trial` (a cota do id 1 terminou), o que
+  depende de autorização.
+
+**Reteste do usuário (2026-11-04, 15:07, sessão `20261104-150711`, desarmado):**
+
+- **Resultado:**
+  - a Questão 1 foi reconhecida como "já analisada" (correção da repetição ✅);
+  - uma captura ficou "pronta, aguardando Analisar";
+  - porém duas fotos com a questão inteira e legível foram julgadas "cortada".
+- **Causa:** a regra antiga "algo precisa vir depois da última alternativa". Nada legível havia
+  abaixo da D (página em branco). Com a nova ordem, os favoritos deixaram de ficar no fim do texto.
+- **Correção:** com posições de linha, vale o espaço livre visível abaixo da última alternativa
+  (`cutBelow` / `bottomRoom`). A exigência de texto depois fica só para texto salvo sem posições.
+- **Dicas:**
+  - a mesma dica agora se repete a cada 30 s (antes, 60 s);
+  - uma dica só sai quando há captura nova, e o app só captura quando percebe mudança na tela.
+- **Verificação:**
+  - JVM 323/323, com novo teste da geometria real da foto das 15:07;
+  - instrumentados 36/36;
+  - diagnóstico das 15 fotos reais de hoje:
+    - Questão 1: as 8 fotos inteiras foram aceitas;
+    - Questão 2: as 3 fotos foram barradas, corretamente, porque o enunciado sai pela borda (conferido
+      a olho, com porta, parede e um dedo na foto ignorados);
+    - Questão 3: as 2 fotos foram barradas (2 alternativas);
+    - 2 fotos sem questão.
+  - Instalada com `install -r`. Os 56 arquivos do backup estão idênticos, mais 15 fotos novas da
+    sessão.
+
+## 3t. Envio automático como funcionamento normal (2026-11-04, não commitada)
+
+**Decisão do usuário:**
+
+> "Preciso de um app que analise as questões e me mande a resposta para o Telegram de forma
+> automática"
+
+O usuário escolheu um interruptor nas configurações mais 1 confirmação ao iniciar cada sessão,
+75 análises por 24 h e nenhum limite por sessão. Isso substitui a política da Fase 3.6 ("envio real
+só na variante de teste, 3 no total").
+
+**Implementado:**
+
+- **Política e configurações:**
+  - `SettingsAutoSendPolicy`, ligada no `AiModule`, permite envio real quando
+    `AiSettings.autoSendEnabled` está ligado (preferência `auto_send_enabled`, desligada por padrão)
+    e não tem teto por sessão (`Int.MAX_VALUE`);
+  - **removidos** `ArmableTrialPolicy`, a variante `trial` do `:app`, `BuildVariantModule`,
+    `AUTO_TRIAL_ID`, `TRIAL_USED_UP` e as preferências de teste;
+  - **removida** a configuração "análises por sessão".
+- **Limite diário:**
+  - opções 10/20/50/75, com padrão 75;
+  - lido da nova chave `requests_per_day_v2`, porque a antiga guardava 10;
+  - contado no banco, inclusive manuais e resultados desconhecidos.
+- **O que continua valendo:**
+  - consentimento no início de cada sessão (ligar o envio no meio de uma sessão não envia; desligar
+    para);
+  - envio só de questões da sessão atual;
+  - nenhum reenvio de questão já analisada nem de resultado desconhecido;
+  - parada em erro de chave ou de crédito, perda de conexão e custo desconhecido;
+  - pausa e retomada.
+- **Configurações:** a seção "Envio automático" tem o interruptor "Analisar questões sozinho" e um
+  aviso com o limite diário. A tela de termos mostra o modelo e quantos envios restam em 24 h.
+
+**Testes:**
+
+- **JVM: 319/319.** `AutoSendTest` (13) substitui `AutoTrialTest` e cobre:
+  - nenhum teto por sessão (12 envios);
+  - limite diário mantido após reinício, com as restantes pendentes;
+  - desligado só captura;
+  - sem consentimento só captura;
+  - ligar ou desligar no meio da sessão;
+  - pendentes antigas nunca enviadas;
+  - pausa e retomada;
+  - custo desconhecido;
+  - erros de chave e de crédito;
+  - conexão perdida (conta no dia, sem reenvio);
+  - termos;
+  - registro de cada requisição.
+
+  Os testes de limite diário passaram a fixar 10.
+- Builds e `spotlessCheck` ✅.
+- Instalada (`app-debug`, mesma assinatura) com `install -r` em 2026-11-04 às 15:49. Os 56 arquivos
+  do backup estão idênticos, e o token e o chat foram mantidos.
+- **Instrumentados não executados após esta mudança:** um app externo estava em primeiro plano.
+
 ## 4. Funcionalidades implementadas
 
 - Identidade QuestVision AI (nome do app, `applicationId` `com.questvision.ai`, título na tela).

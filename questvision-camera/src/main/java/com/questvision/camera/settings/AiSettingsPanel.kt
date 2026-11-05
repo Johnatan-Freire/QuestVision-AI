@@ -54,7 +54,7 @@ import com.android.camera.coreui.overlay.SettingsOverlay
 import com.android.camera.coreui.overlay.SettingsRow
 import com.android.camera.coreui.overlay.settingsSwitchColors
 import com.questvision.camera.R
-import com.questvision.camera.ai.TRIAL_MAX_REQUESTS_PER_SESSION
+import com.questvision.camera.telegram.TelegramSettingsSection
 import java.util.Locale
 
 /**
@@ -112,13 +112,6 @@ fun AiSettingsPanel(
                 optionLabel = { it.toString() },
             )
             SettingsDropdown(
-                label = stringResource(R.string.questvision_settings_analyses_per_session),
-                options = AiSettings.analysesPerSessionOptions,
-                selected = state.settings.analysesPerSession,
-                onSelected = viewModel::selectAnalysesPerSession,
-                optionLabel = { it.toString() },
-            )
-            SettingsDropdown(
                 label = stringResource(R.string.questvision_settings_max_output_tokens),
                 options = AiSettings.maxOutputTokensOptions,
                 selected = state.settings.maxOutputTokens,
@@ -132,32 +125,18 @@ fun AiSettingsPanel(
                 onSelected = viewModel::selectImageMaxDimension,
                 optionLabel = { it.toString() },
             )
-            if (state.trialAvailable) {
-                SettingsHeader(text = stringResource(R.string.questvision_settings_trial))
-                SettingsRow(label = stringResource(R.string.questvision_settings_trial_armed)) {
-                    Switch(
-                        checked = state.settings.autoTrialArmed,
-                        onCheckedChange = viewModel::setAutoTrialArmed,
-                        // Used up: it can still be switched off, never on again.
-                        enabled = state.settings.autoTrialArmed || state.trialRequestsLeft > 0,
-                        colors = settingsSwitchColors(),
-                    )
-                }
-                Notice(
-                    text =
-                        if (state.trialRequestsLeft > 0) {
-                            stringResource(
-                                R.string.questvision_settings_trial_left,
-                                state.trialRequestsLeft,
-                                TRIAL_MAX_REQUESTS_PER_SESSION,
-                            )
-                        } else {
-                            stringResource(R.string.questvision_settings_trial_spent)
-                        },
+            SettingsHeader(text = stringResource(R.string.questvision_settings_auto_send_header))
+            SettingsRow(label = stringResource(R.string.questvision_settings_auto_send)) {
+                Switch(
+                    checked = state.settings.autoSendEnabled,
+                    onCheckedChange = viewModel::setAutoSend,
+                    colors = settingsSwitchColors(),
                 )
-                Notice(text = stringResource(R.string.questvision_settings_trial_notice, TRIAL_MAX_REQUESTS_PER_SESSION))
             }
+            Notice(text = stringResource(R.string.questvision_settings_auto_send_notice, state.settings.requestsPerDay))
             Notice(text = stringResource(R.string.questvision_settings_sending_policy))
+
+            TelegramSettingsSection()
         }
     }
 }
@@ -291,7 +270,7 @@ private fun keyErrorText(state: AiSettingsUiState): String? =
     }
 
 @Composable
-private fun Notice(
+internal fun Notice(
     text: String,
     modifier: Modifier = Modifier,
 ) {
